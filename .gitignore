@@ -1,0 +1,7 @@
+# Rust build output
+/target/
+
+# Tools
+.claude/
+docs/superpowers/
+.superpowers/

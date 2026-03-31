@@ -1,0 +1,23 @@
+[package]
+name = "ttd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "A terminal-first task manager for the todo.txt.d format"
+license = "MIT"
+repository = "https://github.com/esatbayhan/ttd"
+keywords = ["todo", "task", "tui", "cli", "productivity"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap = { version = "4.5.60", features = ["derive"] }
+crossterm = "0.29.0"
+ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
+time = { version = "0.3.47", features = ["formatting", "parsing", "macros", "local-offset"] }
+
+[dev-dependencies]
+expectrl = "0.8.0"
+
+[profile.release]
+lto = true
+strip = true
