@@ -460,10 +460,10 @@ fn render_shows_editor_modal_and_conflict_prompt_when_active() {
     let text = buffer_text(&render(&app));
     assert!(text.contains("Quick Entry"));
     assert!(text.contains("draft task"));
-    assert!(text.contains("Enter save"));
+    assert!(text.contains("enter save"));
     assert!(text.contains("ctrl+d due"));
-    assert!(text.contains("ctrl+s scheduled"));
-    assert!(text.contains("ctrl+t starting"));
+    assert!(text.contains("ctrl+s sched"));
+    assert!(text.contains("ctrl+t start"));
 
     let mut saver = ConflictSaver::default();
     app.selected_task = Some(SelectedTask::new(

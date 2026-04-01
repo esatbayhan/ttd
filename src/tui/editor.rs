@@ -154,6 +154,37 @@ impl EditorState {
         }
     }
 
+    pub fn move_cursor_up(&mut self, wrap_width: usize) -> bool {
+        if wrap_width == 0 {
+            return false;
+        }
+        if self.cursor_pos >= wrap_width {
+            self.cursor_pos -= wrap_width;
+            true
+        } else if self.cursor_pos > 0 {
+            self.cursor_pos = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn move_cursor_down(&mut self, wrap_width: usize) -> bool {
+        if wrap_width == 0 {
+            return false;
+        }
+        let char_count = self.raw_line.chars().count();
+        if self.cursor_pos + wrap_width <= char_count {
+            self.cursor_pos += wrap_width;
+            true
+        } else if self.cursor_pos < char_count {
+            self.cursor_pos = char_count;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn move_cursor_home(&mut self) {
         self.cursor_pos = 0;
     }

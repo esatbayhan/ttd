@@ -68,8 +68,8 @@ Config is stored at:
 
 | Key | Action |
 |-----|--------|
-| `j`/`k` | Navigate up/down |
-| `h`/`l` | Switch focus between sidebar and task list |
+| `j`/`k` or `↑`/`↓` | Navigate up/down |
+| `h`/`l` or `←`/`→` | Switch focus between sidebar and task list |
 | `gg`/`G` | Jump to top/bottom |
 | `a` | Add a new task |
 | `e` | Edit selected task |

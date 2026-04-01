@@ -3,6 +3,7 @@ use super::editor::{
     EditorState, SaveConflictState, SelectedTask, ShortcutApplyOutcome,
 };
 use super::events::normalize_key;
+use super::render::EDITOR_MODAL_WIDTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -155,11 +156,11 @@ impl AppState {
                 self.focus = toggle_focus(self.focus);
                 Some(AppAction::FocusNext)
             }
-            "h" => {
+            "h" | "left" => {
                 self.focus = toggle_focus(self.focus);
                 Some(AppAction::FocusPrev)
             }
-            "l" => {
+            "l" | "right" => {
                 self.focus = toggle_focus(self.focus);
                 Some(AppAction::FocusNext)
             }
@@ -168,8 +169,8 @@ impl AppState {
                 self.search_query.clear();
                 Some(AppAction::EnterSearch)
             }
-            "j" => Some(AppAction::MoveDown),
-            "k" => Some(AppAction::MoveUp),
+            "j" | "down" => Some(AppAction::MoveDown),
+            "k" | "up" => Some(AppAction::MoveUp),
             "gg" => Some(AppAction::MoveTop),
             "G" => Some(AppAction::MoveBottom),
             "enter" => Some(AppAction::OpenSelected),
@@ -261,6 +262,16 @@ impl AppState {
             }
             "right" => {
                 editor.move_cursor_right();
+                None
+            }
+            "up" => {
+                let inner_width = (EDITOR_MODAL_WIDTH - 2) as usize;
+                editor.move_cursor_up(inner_width);
+                None
+            }
+            "down" => {
+                let inner_width = (EDITOR_MODAL_WIDTH - 2) as usize;
+                editor.move_cursor_down(inner_width);
                 None
             }
             "home" => {

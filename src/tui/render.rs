@@ -9,6 +9,8 @@ use super::editor::EditorMode;
 use super::session::{SidebarItem, TuiSession};
 use super::widgets::{render_help_bar, render_task_lines};
 
+pub const EDITOR_MODAL_WIDTH: u16 = 68;
+
 const SIDEBAR_ENTRIES: [&str; 7] = [
     "Inbox",
     "Today",
@@ -112,19 +114,19 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
     let mut selected_line_index: Option<usize> = None;
     let mut line_count: usize = 0;
 
+    if !app.search_query.is_empty() {
+        task_lines.push(Line::raw(format!("Search: {}", app.search_query)));
+        task_lines.push(Line::raw(""));
+        line_count += 2;
+    } else if app.search_active {
+        task_lines.push(Line::raw("Search: "));
+        task_lines.push(Line::raw(""));
+        line_count += 2;
+    }
+
     if session.visible_tasks().is_empty() {
         task_lines.push(Line::raw("No tasks in this view"));
     } else {
-        if !app.search_query.is_empty() {
-            task_lines.push(Line::raw(format!("Search: {}", app.search_query)));
-            task_lines.push(Line::raw(""));
-            line_count += 2;
-        } else if app.search_active {
-            task_lines.push(Line::raw("Search: "));
-            task_lines.push(Line::raw(""));
-            line_count += 2;
-        }
-
         let task_count = session.visible_tasks().len();
         for (i, stored) in session.visible_tasks().iter().enumerate() {
             let is_selected = app
@@ -204,7 +206,6 @@ fn render_main_shell(
 
 fn render_overlays(frame: &mut Frame<'_>, app: &AppState) {
     if let Some(editor) = app.editor.as_ref() {
-        let modal = centered_rect(frame.area(), 68, 12);
         let title = match editor.mode {
             EditorMode::QuickEntry => "Quick Entry",
             EditorMode::Edit => "Edit Task",
@@ -216,13 +217,13 @@ fn render_overlays(frame: &mut Frame<'_>, app: &AppState) {
                 .map(|error| format!("\n{error}"))
                 .unwrap_or_default();
             format!(
-                "\n\n{} date: {}\nEnter apply | Esc cancel helper{}",
+                "\n\n{} date: {}{}",
                 shortcut.shortcut.label(),
                 shortcut.input,
                 error_text
             )
         } else {
-            "\n\nEnter save | Esc cancel\nctrl+d due\nctrl+s scheduled\nctrl+t starting".to_string()
+            String::new()
         };
         let helper_text = format!(
             "due: {}\nscheduled: {}\nstarting: {}{}",
@@ -231,38 +232,102 @@ fn render_overlays(frame: &mut Frame<'_>, app: &AppState) {
             editor.starting.as_deref().unwrap_or("-"),
             shortcut_text
         );
-        let text = format!("{}\n\n{}", editor.raw_line, helper_text);
+
+        // The modal grows with the input text up to a cap, then scrolls.
+        let modal_width = EDITOR_MODAL_WIDTH;
+        let inner_width = (modal_width - 2) as usize; // subtract left+right borders
+        let helper_line_count = helper_text.lines().count() as u16;
+        let raw_visual_rows = if inner_width > 0 {
+            let char_count = editor.raw_line.chars().count();
+            (char_count / inner_width + 1).max(1) as u16
+        } else {
+            1u16
+        };
+        let max_input_rows = 10u16;
+        let input_rows = raw_visual_rows.clamp(1, max_input_rows);
+        let chrome = 2 + 1; // borders (top+bottom) + blank separator line
+        let desired_height = input_rows + helper_line_count + chrome;
+        let max_height = frame.area().height.saturating_sub(2);
+        // Keep the editor taller than the conflict dialog (height 7) so its
+        // title stays visible when both overlays are stacked.
+        let min_height = 9u16;
+        let mut modal_height = desired_height.max(min_height).min(max_height);
+        // Ensure the vertical remainder is even so centered_rect grows
+        // symmetrically (1 row top + 1 row bottom) instead of alternating.
+        let remainder = frame.area().height.saturating_sub(modal_height);
+        if remainder % 2 != 0 {
+            modal_height = (modal_height + 1).min(max_height);
+        }
+
+        let modal = centered_rect(frame.area(), modal_width, modal_height);
+
+        // Render modal border and clear the area underneath.
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let modal_inner = block.inner(modal);
         frame.render_widget(Clear, modal);
+        frame.render_widget(block, modal);
+
+        // Split inner area: scrollable input (top), blank separator, helpers (bottom).
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(helper_line_count),
+            ])
+            .split(modal_inner);
+        let input_area = chunks[0];
+        let helper_area = chunks[2];
+
+        // Character-wrap the raw_line so the cursor arithmetic
+        // (cursor_pos / width, cursor_pos % width) stays correct,
+        // then scroll to keep the cursor row visible.
+        let raw_display = char_wrap_text(&editor.raw_line, inner_width);
+        let cursor_row = if inner_width > 0 {
+            editor.cursor_pos / inner_width
+        } else {
+            0
+        };
+        let input_height = input_area.height as usize;
+        let scroll_offset = if input_height > 0 && cursor_row >= input_height {
+            cursor_row - input_height + 1
+        } else {
+            0
+        };
+
         frame.render_widget(
-            Paragraph::new(text)
-                .block(Block::default().borders(Borders::ALL).title(title))
-                .wrap(Wrap { trim: false }),
-            modal,
+            Paragraph::new(raw_display)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll_offset as u16, 0)),
+            input_area,
+        );
+
+        frame.render_widget(
+            Paragraph::new(helper_text.as_str()).wrap(Wrap { trim: false }),
+            helper_area,
         );
 
         // Render cursor
-        let inner_width = modal.width.saturating_sub(2) as usize;
         if inner_width > 0 {
             if let Some(shortcut) = editor.shortcut.as_ref() {
-                // Cursor is on the shortcut input line
-                let raw_visual_rows = visual_line_count(&editor.raw_line, inner_width);
-                // Lines between raw_line and shortcut: empty, due, scheduled, starting, empty = 5
-                let shortcut_base_row = raw_visual_rows + 5;
+                // Shortcut input sits on line 4 of helper_text
+                // (due=0, scheduled=1, starting=2, blank=3, shortcut=4).
+                let shortcut_row = 4u16;
                 let prefix_len = shortcut.shortcut.label().len() + " date: ".len();
                 let col_in_line = prefix_len + shortcut.cursor_pos;
-                let cursor_row = shortcut_base_row + col_in_line / inner_width;
                 let cursor_col = col_in_line % inner_width;
+                let extra_rows = (col_in_line / inner_width) as u16;
                 frame.set_cursor_position((
-                    modal.x + 1 + cursor_col as u16,
-                    modal.y + 1 + cursor_row as u16,
+                    helper_area.x + cursor_col as u16,
+                    helper_area.y + shortcut_row + extra_rows,
                 ));
             } else {
-                // Cursor is on the raw_line
-                let cursor_row = editor.cursor_pos / inner_width;
+                // Cursor on the raw_line, adjusted for scroll.
+                let visible_row = cursor_row - scroll_offset;
                 let cursor_col = editor.cursor_pos % inner_width;
                 frame.set_cursor_position((
-                    modal.x + 1 + cursor_col as u16,
-                    modal.y + 1 + cursor_row as u16,
+                    input_area.x + cursor_col as u16,
+                    input_area.y + visible_row as u16,
                 ));
             }
         }
@@ -356,10 +421,21 @@ fn centered_rect(area: ratatui::layout::Rect, width: u16, height: u16) -> ratatu
         .split(vertical)[1]
 }
 
-fn visual_line_count(text: &str, width: usize) -> usize {
-    if text.is_empty() || width == 0 {
-        return 1;
+/// Pre-wrap text at exact character boundaries so that the visual layout
+/// matches the simple `cursor_pos / width` cursor calculation.  Each
+/// resulting logical line is at most `width` characters, so the
+/// Paragraph's word-wrapper will never split it further.
+fn char_wrap_text(text: &str, width: usize) -> String {
+    if width == 0 || text.is_empty() {
+        return text.to_string();
     }
-    let char_count = text.chars().count();
-    (char_count + width - 1) / width
+    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::with_capacity(text.len() + chars.len() / width);
+    for (i, &ch) in chars.iter().enumerate() {
+        if i > 0 && i % width == 0 {
+            result.push('\n');
+        }
+        result.push(ch);
+    }
+    result
 }

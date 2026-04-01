@@ -254,6 +254,8 @@ fn key_token_from_event(event: &Event) -> Option<String> {
         KeyCode::Esc => Some("esc".into()),
         KeyCode::Left => Some("left".into()),
         KeyCode::Right => Some("right".into()),
+        KeyCode::Up => Some("up".into()),
+        KeyCode::Down => Some("down".into()),
         KeyCode::Home => Some("home".into()),
         KeyCode::End => Some("end".into()),
         KeyCode::Char(character) => {
