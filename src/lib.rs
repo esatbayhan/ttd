@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod smartlist;
 pub mod cli;
 pub mod config;
 pub mod parser;

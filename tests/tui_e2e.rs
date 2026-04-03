@@ -12,6 +12,21 @@ fn temp_path(name: &str) -> PathBuf {
     path
 }
 
+fn write_standard_lists(root: &std::path::Path) {
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("inbox.list"),
+        "---\nname: Inbox\norder: 1\n---\nno due\nno scheduled\nno starting\n",
+    )
+    .unwrap();
+    fs::write(
+        lists_dir.join("done.list"),
+        "---\nname: Done\norder: 5\n---\ndone\n",
+    )
+    .unwrap();
+}
+
 #[test]
 fn first_run_welcome_flow_persists_config_and_shows_real_task_view() {
     let root = temp_path("welcome");
@@ -19,6 +34,7 @@ fn first_run_welcome_flow_persists_config_and_shows_real_task_view() {
     let task_dir = root.join("todo.txt.d");
     fs::create_dir_all(&config_home).unwrap();
     fs::create_dir_all(task_dir.join("done.txt.d")).unwrap();
+    write_standard_lists(&task_dir);
     fs::write(task_dir.join("a.txt"), "Call Mom +Family\n").unwrap();
 
     let mut process = spawn(format!(
@@ -50,6 +66,7 @@ fn live_tui_search_shows_the_active_query() {
     fs::create_dir_all(&config_home).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(task_dir.join("done.txt.d")).unwrap();
+    write_standard_lists(&task_dir);
     fs::write(task_dir.join("a.txt"), "Call Mom\n").unwrap();
     fs::write(task_dir.join("b.txt"), "Email Alex\n").unwrap();
     fs::create_dir_all(config_home.join("ttd")).unwrap();
@@ -82,6 +99,7 @@ fn live_tui_delete_removes_the_selected_task_file() {
     fs::create_dir_all(&config_home).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(task_dir.join("done.txt.d")).unwrap();
+    write_standard_lists(&task_dir);
     fs::write(task_dir.join("a.txt"), "Alpha task\n").unwrap();
     fs::write(task_dir.join("b.txt"), "Beta task\n").unwrap();
     fs::create_dir_all(config_home.join("ttd")).unwrap();

@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::parser::parse_task_line;
-use crate::query::{SmartFilter, filter_name, sort_tasks};
+use crate::query::sort_tasks;
 use crate::refresh::SnapshotIndex;
 use crate::store::{Snapshot, StoredTask, TaskId, TaskStore};
 use crate::task::Task;
@@ -12,7 +12,7 @@ use crate::tui::editor::{ConflictChoice, EditorState, SelectedTask};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarItem {
-    Smart(SmartFilter),
+    SmartList(usize),
     Separator,
     ProjectsHeader,
     Project(String),
@@ -93,9 +93,11 @@ pub struct TuiSession {
     store: Option<TaskStore>,
     today: String,
     snapshot: Snapshot,
+    smart_lists: Vec<crate::smartlist::SmartList>,
     sidebar_items: Vec<SidebarItem>,
     active_sidebar_item: SidebarItem,
     visible_tasks: Vec<StoredTask>,
+    visible_groups: Vec<crate::smartlist::TaskGroup>,
     selected_task_index: Option<usize>,
     fs_index: Option<SnapshotIndex>,
 }
@@ -120,9 +122,11 @@ impl TuiSession {
                 open_tasks: Vec::new(),
                 done_tasks: Vec::new(),
             },
+            smart_lists: Vec::new(),
             sidebar_items: Vec::new(),
-            active_sidebar_item: SidebarItem::Smart(SmartFilter::Inbox),
+            active_sidebar_item: SidebarItem::SmartList(0),
             visible_tasks: Vec::new(),
+            visible_groups: Vec::new(),
             selected_task_index: None,
             fs_index: None,
         }
@@ -132,14 +136,18 @@ impl TuiSession {
         let store = TaskStore::open(root)?;
         let snapshot = store.load_all()?;
         let fs_index = Some(store.snapshot_index()?);
+        let smart_lists = crate::smartlist::load_all(&store.lists_dir());
+        let default_sidebar = SidebarItem::SmartList(0);
         let mut session = Self {
             app: AppState::new(AppMode::Main),
             store: Some(store),
             today: today.to_string(),
             snapshot,
+            smart_lists,
             sidebar_items: Vec::new(),
-            active_sidebar_item: SidebarItem::Smart(SmartFilter::Inbox),
+            active_sidebar_item: default_sidebar,
             visible_tasks: Vec::new(),
+            visible_groups: Vec::new(),
             selected_task_index: None,
             fs_index,
         };
@@ -165,6 +173,21 @@ impl TuiSession {
 
     pub fn visible_tasks(&self) -> &[StoredTask] {
         &self.visible_tasks
+    }
+
+    pub fn visible_groups(&self) -> &[crate::smartlist::TaskGroup] {
+        &self.visible_groups
+    }
+
+    pub fn smart_lists(&self) -> &[crate::smartlist::SmartList] {
+        &self.smart_lists
+    }
+
+    pub fn smart_list_for_active(&self) -> Option<&crate::smartlist::SmartList> {
+        match &self.active_sidebar_item {
+            SidebarItem::SmartList(index) => self.smart_lists.get(*index),
+            _ => None,
+        }
     }
 
     pub fn selected_task(&self) -> Option<&StoredTask> {
@@ -236,18 +259,43 @@ impl TuiSession {
     }
 
     fn rebuild(&mut self) {
-        self.sidebar_items = build_sidebar_items(&self.snapshot);
+        self.sidebar_items = build_sidebar_items(&self.smart_lists, &self.snapshot);
         if !self.sidebar_items.contains(&self.active_sidebar_item) {
-            self.active_sidebar_item = SidebarItem::Smart(SmartFilter::Inbox);
+            self.active_sidebar_item = self
+                .sidebar_items
+                .iter()
+                .find(|item| {
+                    matches!(
+                        item,
+                        SidebarItem::SmartList(_)
+                            | SidebarItem::Project(_)
+                            | SidebarItem::Context(_)
+                    )
+                })
+                .cloned()
+                .unwrap_or(SidebarItem::SmartList(0));
         }
         self.rebuild_visible_tasks();
     }
 
     fn rebuild_visible_tasks(&mut self) {
         self.visible_tasks = apply_search_filter(
-            filter_snapshot(&self.snapshot, &self.active_sidebar_item, &self.today),
+            filter_snapshot(
+                &self.snapshot,
+                &self.active_sidebar_item,
+                &self.today,
+                &self.smart_lists,
+            ),
             &self.app.search_query,
         );
+        self.visible_groups = if let Some(smart_list) = self.smart_list_for_active() {
+            crate::smartlist::group(smart_list, &self.visible_tasks)
+        } else {
+            vec![crate::smartlist::TaskGroup {
+                label: String::new(),
+                tasks: self.visible_tasks.clone(),
+            }]
+        };
         self.selected_task_index = (!self.visible_tasks.is_empty()).then_some(0);
         self.sync_selected_task();
     }
@@ -584,16 +632,21 @@ fn snapshot_contains_task(snapshot: &Snapshot, wanted: &TaskId) -> bool {
         .any(|stored| stored.id == *wanted)
 }
 
-fn build_sidebar_items(snapshot: &Snapshot) -> Vec<SidebarItem> {
-    let mut items = vec![
-        SidebarItem::Smart(SmartFilter::Inbox),
-        SidebarItem::Smart(SmartFilter::Today),
-        SidebarItem::Smart(SmartFilter::Scheduled),
-        SidebarItem::Smart(SmartFilter::Upcoming),
-        SidebarItem::Smart(SmartFilter::Done),
-        SidebarItem::Separator,
-        SidebarItem::ProjectsHeader,
-    ];
+fn build_sidebar_items(
+    smart_lists: &[crate::smartlist::SmartList],
+    snapshot: &Snapshot,
+) -> Vec<SidebarItem> {
+    let mut items: Vec<SidebarItem> = smart_lists
+        .iter()
+        .enumerate()
+        .map(|(index, _)| SidebarItem::SmartList(index))
+        .collect();
+
+    if !items.is_empty() {
+        items.push(SidebarItem::Separator);
+    }
+
+    items.push(SidebarItem::ProjectsHeader);
 
     let mut projects = BTreeSet::new();
     let mut contexts = BTreeSet::new();
@@ -613,47 +666,72 @@ fn build_sidebar_items(snapshot: &Snapshot) -> Vec<SidebarItem> {
     items
 }
 
-fn filter_snapshot(snapshot: &Snapshot, active: &SidebarItem, today: &str) -> Vec<StoredTask> {
-    let ordered_tasks = ordered_tasks(snapshot, today);
-
+fn filter_snapshot(
+    snapshot: &Snapshot,
+    active: &SidebarItem,
+    today: &str,
+    smart_lists: &[crate::smartlist::SmartList],
+) -> Vec<StoredTask> {
     match active {
-        SidebarItem::Smart(filter) => {
-            let mut tasks = ordered_tasks
-                .iter()
-                .map(|stored| stored.task.clone())
-                .collect::<Vec<_>>();
-            sort_tasks(&mut tasks, today);
-
-            let filtered = filter_name(*filter, &tasks, today);
-            ordered_tasks
+        SidebarItem::SmartList(index) => {
+            if let Some(smart_list) = smart_lists.get(*index) {
+                if smart_list.parse_error.is_some() {
+                    return Vec::new();
+                }
+                let all_tasks: Vec<StoredTask> = if needs_done_tasks(smart_list) {
+                    snapshot
+                        .open_tasks
+                        .iter()
+                        .chain(snapshot.done_tasks.iter())
+                        .cloned()
+                        .collect()
+                } else {
+                    snapshot.open_tasks.clone()
+                };
+                crate::smartlist::evaluate(smart_list, &all_tasks, today)
+            } else {
+                Vec::new()
+            }
+        }
+        SidebarItem::Project(project) => {
+            let ordered = ordered_tasks(snapshot, today);
+            ordered
                 .into_iter()
-                .filter(|stored| filtered.iter().any(|task| task.raw == stored.task.raw))
+                .filter(|stored| {
+                    stored
+                        .task
+                        .projects
+                        .iter()
+                        .any(|value| value == project.strip_prefix('+').unwrap_or(project))
+                })
                 .collect()
         }
-        SidebarItem::Project(project) => ordered_tasks
-            .into_iter()
-            .filter(|stored| {
-                stored
-                    .task
-                    .projects
-                    .iter()
-                    .any(|value| value == project.strip_prefix('+').unwrap_or(project))
-            })
-            .collect(),
-        SidebarItem::Context(context) => ordered_tasks
-            .into_iter()
-            .filter(|stored| {
-                stored
-                    .task
-                    .contexts
-                    .iter()
-                    .any(|value| value == context.strip_prefix('@').unwrap_or(context))
-            })
-            .collect(),
+        SidebarItem::Context(context) => {
+            let ordered = ordered_tasks(snapshot, today);
+            ordered
+                .into_iter()
+                .filter(|stored| {
+                    stored
+                        .task
+                        .contexts
+                        .iter()
+                        .any(|value| value == context.strip_prefix('@').unwrap_or(context))
+                })
+                .collect()
+        }
         SidebarItem::ProjectsHeader | SidebarItem::ContextsHeader | SidebarItem::Separator => {
             Vec::new()
         }
     }
+}
+
+fn needs_done_tasks(list: &crate::smartlist::SmartList) -> bool {
+    list.blocks.iter().any(|block| {
+        block
+            .conditions
+            .iter()
+            .any(|c| matches!(c, crate::smartlist::Condition::DoneFilter { done: true }))
+    })
 }
 
 fn apply_search_filter(tasks: Vec<StoredTask>, query: &str) -> Vec<StoredTask> {

@@ -1,9 +1,23 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ttd::query::SmartFilter;
 use ttd::tui::editor::{EditorState, SaveConflictState};
 use ttd::tui::session::{SidebarItem, TuiSession};
+
+fn write_standard_lists(root: &std::path::Path) {
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("inbox.list"),
+        "---\nname: Inbox\norder: 1\n---\nno due\nno scheduled\nno starting\n",
+    )
+    .unwrap();
+    fs::write(
+        lists_dir.join("done.list"),
+        "---\nname: Done\norder: 5\n---\ndone\n",
+    )
+    .unwrap();
+}
 
 fn temp_path(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -28,6 +42,7 @@ fn welcome_session_does_not_create_placeholder_task_store_on_disk() {
 fn session_loads_snapshot_and_exposes_smart_filters() {
     let root = temp_path("load");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
     fs::write(root.join("b.txt"), "(A) File taxes due:2026-03-30 +Admin\n").unwrap();
     fs::write(
@@ -40,7 +55,7 @@ fn session_loads_snapshot_and_exposes_smart_filters() {
 
     assert_eq!(
         session.active_sidebar_item(),
-        SidebarItem::Smart(SmartFilter::Inbox)
+        SidebarItem::SmartList(0)
     );
     assert_eq!(session.visible_tasks().len(), 1);
     assert_eq!(
@@ -50,7 +65,7 @@ fn session_loads_snapshot_and_exposes_smart_filters() {
     assert!(
         session
             .sidebar_items()
-            .contains(&SidebarItem::Smart(SmartFilter::Done))
+            .contains(&SidebarItem::SmartList(1))
     );
 }
 
@@ -58,6 +73,7 @@ fn session_loads_snapshot_and_exposes_smart_filters() {
 fn session_discovers_project_and_context_sidebar_items() {
     let root = temp_path("dynamic-sidebar");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package +Errands @town\n").unwrap();
 
@@ -89,6 +105,7 @@ fn session_discovers_project_and_context_sidebar_items() {
 fn selecting_project_or_context_filters_visible_tasks() {
     let root = temp_path("filter");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package +Errands @town\n").unwrap();
 
@@ -114,15 +131,13 @@ fn selecting_project_or_context_filters_visible_tasks() {
 fn sidebar_focus_navigation_moves_between_smart_and_dynamic_items() {
     let root = temp_path("sidebar-nav");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package +Errands @town\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-30").unwrap();
     session.app_mut().focus = ttd::tui::app::FocusArea::Sidebar;
 
-    session.dispatch_key("j").unwrap();
-    session.dispatch_key("j").unwrap();
-    session.dispatch_key("j").unwrap();
     session.dispatch_key("j").unwrap();
     session.dispatch_key("j").unwrap();
 
@@ -140,6 +155,7 @@ fn sidebar_focus_navigation_moves_between_smart_and_dynamic_items() {
 fn conflict_actions_can_reload_and_dismiss_session_dialog() {
     let root = temp_path("conflict-actions");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -174,6 +190,7 @@ fn conflict_actions_can_reload_and_dismiss_session_dialog() {
 fn quick_entry_creates_a_task_and_selects_it() {
     let root = temp_path("quick-entry");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
@@ -189,7 +206,7 @@ fn quick_entry_creates_a_task_and_selects_it() {
     session.dispatch_key("enter").unwrap();
 
     let files = fs::read_dir(&root).unwrap().count();
-    assert_eq!(files, 3);
+    assert_eq!(files, 4); // a.txt, new task file, done.txt.d, lists.d
     assert_eq!(session.visible_tasks().len(), 2);
     assert_eq!(
         session.selected_task().unwrap().task.description,
@@ -201,6 +218,7 @@ fn quick_entry_creates_a_task_and_selects_it() {
 fn quick_entry_selects_new_duplicate_task() {
     let root = temp_path("quick-entry-duplicate");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
@@ -222,18 +240,20 @@ fn quick_entry_selects_new_duplicate_task() {
 fn quick_entry_hidden_by_current_filter_preserves_previous_selection() {
     let root = temp_path("quick-entry-hidden-selection");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
-    fs::write(root.join("a.txt"), "Plan taxes due:2026-03-30 +Admin\n").unwrap();
-    fs::write(root.join("b.txt"), "Call Mom due:2026-03-30 +Family\n").unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Plan taxes +Admin\n").unwrap();
+    fs::write(root.join("b.txt"), "Call Mom +Admin\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Today));
+    session.select_sidebar_item(SidebarItem::Project("+Admin".into()));
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
     session.dispatch_key("j").unwrap();
     let expected_file_name = session.selected_task().unwrap().id.file_name().to_string();
     let expected_description = session.selected_task().unwrap().task.description.clone();
 
+    // Create a task without +Admin project - it won't appear in the +Admin view
     session.dispatch_key("a").unwrap();
-    for key in ["I", "n", "b", "o", "x", " ", "o", "n", "l", "y"] {
+    for key in ["O", "t", "h", "e", "r", " ", "t", "a", "s", "k"] {
         session.dispatch_key(key).unwrap();
     }
     session.dispatch_key("enter").unwrap();
@@ -253,6 +273,7 @@ fn quick_entry_hidden_by_current_filter_preserves_previous_selection() {
 fn search_filters_visible_tasks_within_the_active_sidebar_view() {
     let root = temp_path("search-active-view");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package +Errands\n").unwrap();
     fs::write(root.join("c.txt"), "Call Dad +Family\n").unwrap();
@@ -275,6 +296,7 @@ fn search_filters_visible_tasks_within_the_active_sidebar_view() {
 fn clearing_search_restores_the_unfiltered_active_view() {
     let root = temp_path("search-clear");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
     fs::write(root.join("b.txt"), "Call Dad +Family\n").unwrap();
 
@@ -298,6 +320,7 @@ fn clearing_search_restores_the_unfiltered_active_view() {
 fn search_next_and_previous_cycle_between_matches_only() {
     let root = temp_path("search-next-prev");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
     fs::write(root.join("b.txt"), "Email Alex\n").unwrap();
     fs::write(root.join("c.txt"), "Call Dad\n").unwrap();
@@ -310,26 +333,32 @@ fn search_next_and_previous_cycle_between_matches_only() {
     }
 
     assert_eq!(session.visible_tasks().len(), 2);
-    assert_eq!(session.selected_task().unwrap().task.raw, "Call Dad");
+    let first = session.selected_task().unwrap().task.raw.clone();
+    let second = if first == "Call Mom" {
+        "Call Dad"
+    } else {
+        "Call Mom"
+    };
 
     session.dispatch_key("esc").unwrap();
     session.dispatch_key("n").unwrap();
-    assert_eq!(session.selected_task().unwrap().task.raw, "Call Mom");
+    assert_eq!(session.selected_task().unwrap().task.raw, second);
 
     session.dispatch_key("N").unwrap();
-    assert_eq!(session.selected_task().unwrap().task.raw, "Call Dad");
+    assert_eq!(session.selected_task().unwrap().task.raw, first);
 }
 
 #[test]
 fn toggle_done_moves_selected_open_task_into_done_view() {
     let root = temp_path("done");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
     session.dispatch_key("x").unwrap();
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Done));
+    session.select_sidebar_item(SidebarItem::SmartList(1));
 
     assert_eq!(session.visible_tasks().len(), 1);
     assert_eq!(session.visible_tasks()[0].task.description, "Call Mom");
@@ -340,6 +369,7 @@ fn toggle_done_moves_selected_open_task_into_done_view() {
 fn delete_confirmation_removes_the_selected_open_task() {
     let root = temp_path("delete-open");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package\n").unwrap();
 
@@ -361,10 +391,11 @@ fn delete_confirmation_removes_the_selected_open_task() {
 fn delete_confirmation_removes_the_selected_done_task() {
     let root = temp_path("delete-done");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("done.txt.d/a.txt"), "x 2026-03-30 Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-31").unwrap();
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Done));
+    session.select_sidebar_item(SidebarItem::SmartList(1));
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
 
     session.dispatch_key("D").unwrap();
@@ -378,10 +409,11 @@ fn delete_confirmation_removes_the_selected_done_task() {
 fn restore_moves_selected_done_task_back_to_open_view() {
     let root = temp_path("restore");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("done.txt.d/a.txt"), "x 2026-03-29 Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Done));
+    session.select_sidebar_item(SidebarItem::SmartList(1));
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
     session.dispatch_key("r").unwrap();
 
@@ -393,6 +425,7 @@ fn restore_moves_selected_done_task_back_to_open_view() {
 fn toggling_done_preserves_selection_in_project_view() {
     let root = temp_path("done-project-selection");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
     fs::write(root.join("b.txt"), "Plan reunion +Family\n").unwrap();
 
@@ -415,6 +448,7 @@ fn toggling_done_preserves_selection_in_project_view() {
 fn toggling_done_preserves_selected_duplicate_file_in_project_view() {
     let root = temp_path("done-project-duplicate-selection");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
     fs::write(root.join("b.txt"), "Call Mom +Family\n").unwrap();
 
@@ -435,6 +469,7 @@ fn toggling_done_preserves_selected_duplicate_file_in_project_view() {
 fn restoring_done_task_preserves_selection_in_project_view() {
     let root = temp_path("restore-project-selection");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Alpha +Family\n").unwrap();
     fs::write(root.join("done.txt.d/b.txt"), "x 2026-03-29 Zulu +Family\n").unwrap();
 
@@ -458,6 +493,7 @@ fn restoring_done_task_preserves_selection_in_project_view() {
 fn restoring_done_preserves_selected_duplicate_file_in_project_view() {
     let root = temp_path("restore-project-duplicate-selection");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
     fs::write(
         root.join("done.txt.d/b.txt"),
@@ -482,6 +518,7 @@ fn restoring_done_preserves_selected_duplicate_file_in_project_view() {
 fn editing_open_task_to_done_moves_it_into_done_view_coherently() {
     let root = temp_path("edit-open-to-done");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
@@ -498,7 +535,7 @@ fn editing_open_task_to_done_moves_it_into_done_view_coherently() {
     assert!(!root.join("a.txt").exists());
     assert!(root.join("done.txt.d/a.txt").exists());
 
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Done));
+    session.select_sidebar_item(SidebarItem::SmartList(1));
     assert_eq!(session.visible_tasks().len(), 1);
     assert!(session.visible_tasks()[0].task.done);
 
@@ -512,10 +549,11 @@ fn editing_open_task_to_done_moves_it_into_done_view_coherently() {
 fn editing_done_task_to_open_moves_it_back_into_open_view_coherently() {
     let root = temp_path("edit-done-to-open");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("done.txt.d/a.txt"), "x 2026-03-29 Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Done));
+    session.select_sidebar_item(SidebarItem::SmartList(1));
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
     session.dispatch_key("e").unwrap();
     session
@@ -528,7 +566,7 @@ fn editing_done_task_to_open_moves_it_back_into_open_view_coherently() {
 
     assert!(root.join("a.txt").exists());
     assert!(!root.join("done.txt.d/a.txt").exists());
-    session.select_sidebar_item(SidebarItem::Smart(SmartFilter::Inbox));
+    session.select_sidebar_item(SidebarItem::SmartList(0));
     assert_eq!(session.visible_tasks().len(), 1);
     assert!(!session.visible_tasks()[0].task.done);
 }
@@ -537,6 +575,7 @@ fn editing_done_task_to_open_moves_it_back_into_open_view_coherently() {
 fn manual_refresh_picks_up_external_file_changes_and_preserves_selection() {
     let root = temp_path("refresh");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
@@ -556,6 +595,7 @@ fn manual_refresh_picks_up_external_file_changes_and_preserves_selection() {
 fn refresh_recovers_when_active_project_filter_disappears() {
     let root = temp_path("refresh-project-filter-disappears");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family\n").unwrap();
     fs::write(root.join("b.txt"), "Plan trip +Travel\n").unwrap();
 
@@ -568,7 +608,7 @@ fn refresh_recovers_when_active_project_filter_disappears() {
 
     assert_eq!(
         session.active_sidebar_item(),
-        SidebarItem::Smart(SmartFilter::Inbox)
+        SidebarItem::SmartList(0)
     );
     assert!(
         !session
@@ -586,6 +626,7 @@ fn refresh_recovers_when_active_project_filter_disappears() {
 fn sidebar_items_include_separators_between_groups() {
     let root = temp_path("sidebar-separators");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
 
     let session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -599,7 +640,7 @@ fn sidebar_items_include_separators_between_groups() {
     // Separator should appear between Done and ProjectsHeader
     let done_pos = items
         .iter()
-        .position(|item| *item == SidebarItem::Smart(SmartFilter::Done))
+        .position(|item| *item == SidebarItem::SmartList(1))
         .unwrap();
     let projects_header_pos = items
         .iter()
@@ -617,6 +658,7 @@ fn sidebar_items_include_separators_between_groups() {
 fn refresh_recovers_when_active_context_filter_disappears() {
     let root = temp_path("refresh-context-filter-disappears");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom @phone\n").unwrap();
     fs::write(root.join("b.txt"), "Book table @town\n").unwrap();
 
@@ -629,7 +671,7 @@ fn refresh_recovers_when_active_context_filter_disappears() {
 
     assert_eq!(
         session.active_sidebar_item(),
-        SidebarItem::Smart(SmartFilter::Inbox)
+        SidebarItem::SmartList(0)
     );
     assert!(
         !session
@@ -647,6 +689,7 @@ fn refresh_recovers_when_active_context_filter_disappears() {
 fn can_auto_refresh_is_false_when_editor_is_open() {
     let root = temp_path("auto-refresh-editor");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -663,6 +706,7 @@ fn can_auto_refresh_is_false_when_editor_is_open() {
 fn can_auto_refresh_is_false_when_delete_confirm_is_active() {
     let root = temp_path("auto-refresh-delete");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -685,6 +729,7 @@ fn can_auto_refresh_is_false_in_welcome_mode() {
 fn poll_refresh_picks_up_externally_created_file() {
     let root = temp_path("poll-created");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
@@ -701,6 +746,7 @@ fn poll_refresh_picks_up_externally_created_file() {
 fn poll_refresh_picks_up_externally_deleted_file() {
     let root = temp_path("poll-deleted");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package\n").unwrap();
 
@@ -718,6 +764,7 @@ fn poll_refresh_picks_up_externally_deleted_file() {
 fn poll_refresh_is_noop_when_nothing_changed() {
     let root = temp_path("poll-noop");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -731,6 +778,7 @@ fn poll_refresh_is_noop_when_nothing_changed() {
 fn poll_refresh_is_noop_when_editor_is_open() {
     let root = temp_path("poll-editor-open");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();

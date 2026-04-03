@@ -218,6 +218,10 @@ impl TaskStore {
         self.root.join(DONE_DIR)
     }
 
+    pub fn lists_dir(&self) -> PathBuf {
+        self.root.join("lists.d")
+    }
+
     fn load_dir(&self, dir: &Path) -> io::Result<Vec<StoredTask>> {
         let mut entries = Vec::new();
 

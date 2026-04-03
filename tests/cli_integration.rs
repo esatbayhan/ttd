@@ -115,6 +115,13 @@ fn running_without_a_subcommand_enters_main_mode_when_config_exists() {
     let config_home = root.join("config-home");
     let task_dir = root.join("todo.txt.d");
     fs::create_dir_all(task_dir.join("done.txt.d")).unwrap();
+    let lists_dir = task_dir.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("inbox.list"),
+        "---\nname: Inbox\norder: 1\n---\nno due\nno scheduled\nno starting\n",
+    )
+    .unwrap();
     fs::create_dir_all(config_home.join("ttd")).unwrap();
     fs::write(
         config_home.join("ttd/config.txt"),

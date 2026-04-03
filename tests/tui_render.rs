@@ -36,6 +36,21 @@ fn temp_path(name: &str) -> PathBuf {
     path
 }
 
+fn write_standard_lists(root: &std::path::Path) {
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("inbox.list"),
+        "---\nname: Inbox\norder: 1\n---\nno due\nno scheduled\nno starting\n",
+    )
+    .unwrap();
+    fs::write(
+        lists_dir.join("done.list"),
+        "---\nname: Done\norder: 5\n---\ndone\n",
+    )
+    .unwrap();
+}
+
 fn render_text(session: &TuiSession) -> String {
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -71,15 +86,7 @@ fn main_shell_renders_sidebar_entries() {
 
     let text = buffer_text(&render(&app));
 
-    for label in [
-        "Inbox",
-        "Today",
-        "Scheduled",
-        "Upcoming",
-        "Done",
-        "Projects",
-        "Contexts",
-    ] {
+    for label in ["Projects", "Contexts"] {
         assert!(text.contains(label), "missing label: {label}");
     }
 }
@@ -88,6 +95,8 @@ fn main_shell_renders_sidebar_entries() {
 fn main_render_shows_sidebar_labels_and_real_task_rows() {
     let root = temp_path("real-rows");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
 
     let session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -104,6 +113,7 @@ fn main_render_shows_sidebar_labels_and_real_task_rows() {
 fn session_render_preserves_search_delete_editor_and_conflict_states() {
     let root = temp_path("stateful-render");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-30").unwrap();
@@ -125,6 +135,7 @@ fn session_render_preserves_search_delete_editor_and_conflict_states() {
 fn session_render_shows_selected_task_and_updates_after_navigation() {
     let root = temp_path("selected-task");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom +Family @phone\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package +Errands @town\n").unwrap();
 
@@ -146,6 +157,7 @@ fn session_render_shows_selected_task_and_updates_after_navigation() {
 fn session_render_shows_active_search_query_and_matching_rows() {
     let root = temp_path("render-search");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
     fs::write(root.join("b.txt"), "Email Alex\n").unwrap();
 
@@ -352,6 +364,7 @@ fn main_shell_renders_delete_confirmation_message() {
 fn session_render_shows_delete_confirmation_for_selected_task() {
     let root = temp_path("render-delete");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root, "2026-03-31").unwrap();
@@ -518,6 +531,7 @@ fn help_bar_shows_conflict_shortcuts() {
 fn session_render_includes_help_bar() {
     let root = temp_path("help-bar");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
 
     let session = TuiSession::open(root, "2026-03-31").unwrap();
@@ -586,6 +600,7 @@ fn task_line_omits_creation_date_when_absent() {
 fn session_render_shows_divider_lines_between_tasks() {
     let root = temp_path("dividers");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
     fs::write(root.join("b.txt"), "Ship package\n").unwrap();
 
@@ -616,6 +631,7 @@ fn session_render_shows_divider_lines_between_tasks() {
 fn session_render_wraps_long_task_descriptions() {
     let root = temp_path("word-wrap");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     fs::write(
         root.join("a.txt"),
         "This is a very long task description that should definitely wrap to the next line in the TUI\n",
@@ -660,6 +676,7 @@ fn session_render_wraps_long_task_descriptions() {
 fn session_render_scrolls_to_keep_selected_task_visible() {
     let root = temp_path("scroll");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     for i in 0..20 {
         fs::write(
             root.join(format!("{:02}.txt", i)),
@@ -747,6 +764,7 @@ fn compute_scroll_offset_handles_word_boundary_wrapping() {
 fn session_render_scroll_keeps_selected_visible_in_narrow_terminal() {
     let root = temp_path("narrow-scroll");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
     // Create tasks with long descriptions that will wrap in a narrow terminal
     for i in 0..10 {
         let long_text = format!(

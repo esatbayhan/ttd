@@ -11,16 +11,6 @@ use super::widgets::{render_help_bar, render_task_lines};
 
 pub const EDITOR_MODAL_WIDTH: u16 = 68;
 
-const SIDEBAR_ENTRIES: [&str; 7] = [
-    "Inbox",
-    "Today",
-    "Scheduled",
-    "Upcoming",
-    "Done",
-    "Projects",
-    "Contexts",
-];
-
 pub fn render_frame(frame: &mut Frame<'_>, app: &AppState) {
     match app.mode {
         AppMode::Welcome => render_welcome(frame, app),
@@ -46,18 +36,10 @@ fn render_welcome(frame: &mut Frame<'_>, app: &AppState) {
 }
 
 fn render_main(frame: &mut Frame<'_>, app: &AppState) {
-    let items = SIDEBAR_ENTRIES
-        .iter()
-        .enumerate()
-        .map(|(index, label)| {
-            let style = if index == 0 {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(*label).style(style)
-        })
-        .collect::<Vec<_>>();
+    let items = vec![
+        ListItem::new("Projects").style(Style::default().add_modifier(Modifier::DIM)),
+        ListItem::new("Contexts").style(Style::default().add_modifier(Modifier::DIM)),
+    ];
 
     let task_content = if app.search_active {
         vec![
@@ -94,6 +76,14 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
         .iter()
         .map(|item| {
             let style = match item {
+                SidebarItem::SmartList(index)
+                    if session
+                        .smart_lists()
+                        .get(*index)
+                        .is_some_and(|l| l.parse_error.is_some()) =>
+                {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM)
+                }
                 _ if *item == session.active_sidebar_item() => {
                     Style::default().add_modifier(Modifier::BOLD)
                 }
@@ -102,11 +92,11 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
                 | SidebarItem::Separator => Style::default().add_modifier(Modifier::DIM),
                 _ => Style::default(),
             };
-            ListItem::new(sidebar_label(item)).style(style)
+            ListItem::new(sidebar_label(item, session.smart_lists())).style(style)
         })
         .collect::<Vec<_>>();
 
-    let sidebar_title = active_filter_title(&session.active_sidebar_item());
+    let sidebar_title = active_filter_title(&session.active_sidebar_item(), session.smart_lists());
     let tasks_title = format!("{} ({})", sidebar_title, session.visible_tasks().len());
 
     let mut task_lines: Vec<Line> = Vec::new();
@@ -124,8 +114,59 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
         line_count += 2;
     }
 
+    let groups = session.visible_groups();
+    let show_group_headers =
+        groups.len() > 1 || groups.first().is_some_and(|g| !g.label.is_empty());
+
     if session.visible_tasks().is_empty() {
-        task_lines.push(Line::raw("No tasks in this view"));
+        if let Some(error) = session
+            .smart_list_for_active()
+            .and_then(|l| l.parse_error.as_ref())
+        {
+            task_lines.push(Line::from(Span::styled(
+                format!("Parse error: {error}"),
+                Style::default().fg(Color::Yellow),
+            )));
+        } else {
+            task_lines.push(Line::raw("No tasks in this view"));
+        }
+    } else if show_group_headers {
+        for (gi, group) in groups.iter().enumerate() {
+            if !group.label.is_empty() {
+                if gi > 0 {
+                    let sep_width = (task_pane_inner_width as usize).saturating_sub(2);
+                    task_lines.push(Line::from(Span::styled(
+                        format!(" {}", "─".repeat(sep_width)),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                    line_count += 1;
+                }
+                task_lines.push(Line::from(Span::styled(
+                    format!(" {}", group.label),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                line_count += 1;
+            }
+
+            for (i, stored) in group.tasks.iter().enumerate() {
+                let is_selected = app
+                    .selected_task
+                    .as_ref()
+                    .is_some_and(|selected| selected.id == stored.id);
+                let lines = render_task_lines(&stored.task, is_selected, task_pane_inner_width);
+                line_count += lines.len();
+                task_lines.extend(lines);
+
+                if is_selected {
+                    selected_line_index = Some(line_count - 1);
+                }
+
+                if i < group.tasks.len() - 1 {
+                    task_lines.push(Line::raw(""));
+                    line_count += 1;
+                }
+            }
+        }
     } else {
         let task_count = session.visible_tasks().len();
         for (i, stored) in session.visible_tasks().iter().enumerate() {
@@ -346,9 +387,16 @@ fn render_overlays(frame: &mut Frame<'_>, app: &AppState) {
     }
 }
 
-fn sidebar_label(item: &SidebarItem) -> String {
+fn sidebar_label(item: &SidebarItem, smart_lists: &[crate::smartlist::SmartList]) -> String {
     match item {
-        SidebarItem::Smart(filter) => format!("{filter:?}"),
+        SidebarItem::SmartList(index) => {
+            if let Some(list) = smart_lists.get(*index) {
+                let icon = list.icon.as_deref().unwrap_or("\u{25c6}"); // ◆ default
+                format!("{icon} {}", list.name)
+            } else {
+                "?".to_string()
+            }
+        }
         SidebarItem::Separator => "──────────────────────".to_string(),
         SidebarItem::ProjectsHeader => "PROJECTS".to_string(),
         SidebarItem::Project(value) => format!("  {value}"),
@@ -357,9 +405,12 @@ fn sidebar_label(item: &SidebarItem) -> String {
     }
 }
 
-fn active_filter_title(item: &SidebarItem) -> String {
+fn active_filter_title(item: &SidebarItem, smart_lists: &[crate::smartlist::SmartList]) -> String {
     match item {
-        SidebarItem::Smart(filter) => format!("{filter:?}"),
+        SidebarItem::SmartList(index) => smart_lists
+            .get(*index)
+            .map(|l| l.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string()),
         SidebarItem::Project(value) => value.clone(),
         SidebarItem::Context(value) => value.clone(),
         SidebarItem::ProjectsHeader => "Projects".to_string(),

@@ -2,34 +2,6 @@ use std::cmp::Ordering;
 
 use crate::task::Task;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SmartFilter {
-    Inbox,
-    Today,
-    Scheduled,
-    Upcoming,
-    Done,
-}
-
-pub fn filter_name<'a>(filter: SmartFilter, tasks: &'a [Task], today: &str) -> Vec<&'a Task> {
-    tasks
-        .iter()
-        .filter(|task| match filter {
-            SmartFilter::Inbox => is_open(task) && !has_any_date(task),
-            SmartFilter::Today => is_open(task) && is_today_task(task, today),
-            SmartFilter::Scheduled => is_open(task) && task.tags.contains_key("scheduled"),
-            SmartFilter::Upcoming => {
-                is_open(task)
-                    && task.tags.iter().any(|(key, value)| {
-                        matches!(key.as_str(), "due" | "scheduled" | "starting")
-                            && value.as_str() > today
-                    })
-            }
-            SmartFilter::Done => task.done,
-        })
-        .collect()
-}
-
 pub fn sort_tasks(tasks: &mut [Task], today: &str) {
     tasks.sort_by(|left, right| {
         compare_done_status(left, right)
@@ -45,23 +17,6 @@ pub fn sort_tasks(tasks: &mut [Task], today: &str) {
             })
             .then_with(|| left.raw.cmp(&right.raw))
     });
-}
-
-fn is_open(task: &Task) -> bool {
-    !task.done
-}
-
-fn has_any_date(task: &Task) -> bool {
-    task.tags.contains_key("due")
-        || task.tags.contains_key("scheduled")
-        || task.tags.contains_key("starting")
-}
-
-fn is_today_task(task: &Task, today: &str) -> bool {
-    task.tags.iter().any(|(key, value)| {
-        matches!(key.as_str(), "due" | "scheduled")
-            && (value.as_str() == today || (value.as_str() < today && is_actionable(task, today)))
-    })
 }
 
 fn is_actionable(task: &Task, today: &str) -> bool {
