@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, MouseButton};
 use crossterm::terminal;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -18,7 +18,8 @@ use ttd::cli::{Cli, Command};
 use ttd::config::ConfigPaths;
 use ttd::store::TaskStore;
 use ttd::tui::app::{AppMode, AppState};
-use ttd::tui::render::render_session_frame;
+use ttd::tui::mouse::{DoubleClickTracker, MouseAction, resolve_mouse_action, resolve_scroll_action};
+use ttd::tui::render::{LayoutRects, render_session_frame, render_session_frame_with_layout};
 use ttd::tui::session::TuiSession;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -130,16 +131,92 @@ fn render_tui_once_to_stdout(session: &TuiSession) -> io::Result<()> {
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 fn run_live_tui(mut session: TuiSession, paths: &ConfigPaths) -> io::Result<()> {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+        ratatui::restore();
+        prev_hook(info);
+    }));
+
     let mut terminal = init_live_terminal()?;
     let mut key_buffer = LiveKeyBuffer::new();
+    let layout = LayoutRects::default();
+    let mut double_click = DoubleClickTracker::new();
     let result = (|| -> io::Result<()> {
         loop {
-            terminal.draw(|frame| render_session_frame(frame, &session))?;
+            terminal.draw(|frame| render_session_frame_with_layout(frame, &session, &layout))?;
 
             if event::poll(POLL_INTERVAL)? {
                 let event = event::read()?;
                 if live_tui_control_for_event(&event) == LiveTuiControl::Exit {
                     return Ok(());
+                }
+
+                if let Event::Mouse(mouse) = &event {
+                    if session.app().editor.is_none()
+                        && session.app().save_conflict.is_none()
+                        && !session.app().confirm_delete
+                        && session.app().mode == AppMode::Main
+                    {
+                        if let Some(rects) = layout.get() {
+                            match mouse.kind {
+                                MouseEventKind::Down(MouseButton::Left) => {
+                                    if let Some(action) = resolve_mouse_action(
+                                        mouse.column,
+                                        mouse.row,
+                                        &rects,
+                                        session.sidebar_items(),
+                                    ) {
+                                        match action {
+                                            MouseAction::SelectSidebar(index) => {
+                                                session.dispatch_mouse_sidebar(index);
+                                            }
+                                            MouseAction::ClickTaskPane { row } => {
+                                                if let Some(task_index) =
+                                                        session.task_index_for_visual_row(row, rects.task_pane_inner_width)
+                                                {
+                                                    if double_click.record(task_index) {
+                                                        session.dispatch_mouse_task_edit()?;
+                                                    } else {
+                                                        session.dispatch_mouse_task_select(task_index);
+                                                    }
+                                                }
+                                            }
+                                            MouseAction::Scroll { .. } => {}
+                                        }
+                                    }
+                                }
+                                MouseEventKind::ScrollUp => {
+                                    if let Some(action) =
+                                        resolve_scroll_action(mouse.column, mouse.row, &rects, -3)
+                                    {
+                                        if let MouseAction::Scroll { in_task_pane, delta } = action {
+                                            if in_task_pane {
+                                                session.apply_task_scroll(delta, rects.visual_line_count, rects.pane_height);
+                                            } else {
+                                                session.apply_sidebar_scroll(delta);
+                                            }
+                                        }
+                                    }
+                                }
+                                MouseEventKind::ScrollDown => {
+                                    if let Some(action) =
+                                        resolve_scroll_action(mouse.column, mouse.row, &rects, 3)
+                                    {
+                                        if let MouseAction::Scroll { in_task_pane, delta } = action {
+                                            if in_task_pane {
+                                                session.apply_task_scroll(delta, rects.visual_line_count, rects.pane_height);
+                                            } else {
+                                                session.apply_sidebar_scroll(delta);
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    continue; // Mouse events don't go through key_buffer
                 }
 
                 let Some(key) =
@@ -158,6 +235,7 @@ fn run_live_tui(mut session: TuiSession, paths: &ConfigPaths) -> io::Result<()> 
             }
         }
     })();
+    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -168,11 +246,13 @@ fn init_live_terminal() -> io::Result<ratatui::DefaultTerminal> {
         let terminal = ratatui::try_init_with_options(TerminalOptions {
             viewport: Viewport::Fixed(Rect::new(0, 0, 80, 24)),
         })?;
-        crossterm::execute!(io::stdout(), terminal::EnterAlternateScreen)?;
+        crossterm::execute!(io::stdout(), terminal::EnterAlternateScreen, EnableMouseCapture)?;
         return Ok(terminal);
     }
 
-    ratatui::try_init()
+    let terminal = ratatui::try_init()?;
+    crossterm::execute!(io::stdout(), EnableMouseCapture)?;
+    Ok(terminal)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

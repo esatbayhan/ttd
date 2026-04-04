@@ -1,13 +1,44 @@
+use std::cell::Cell;
+
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use super::app::{AppMode, AppState, FocusArea};
 use super::editor::EditorMode;
 use super::session::{SidebarItem, TuiSession};
 use super::widgets::{render_help_bar, render_task_lines};
+
+#[derive(Clone, Copy, Debug)]
+pub struct Rects {
+    pub sidebar: Rect,
+    pub task_pane: Rect,
+    pub sidebar_item_count: usize,
+    pub sidebar_offset: usize,
+    pub task_pane_inner_width: u16,
+    pub visual_line_count: usize,
+    pub pane_height: usize,
+}
+
+#[derive(Default)]
+pub struct LayoutRects {
+    inner: Cell<Option<Rects>>,
+}
+
+impl LayoutRects {
+    pub fn set(&self, rects: Rects) {
+        self.inner.set(Some(rects));
+    }
+
+    pub fn get(&self) -> Option<Rects> {
+        self.inner.get()
+    }
+}
 
 pub const EDITOR_MODAL_WIDTH: u16 = 68;
 
@@ -21,7 +52,18 @@ pub fn render_frame(frame: &mut Frame<'_>, app: &AppState) {
 pub fn render_session_frame(frame: &mut Frame<'_>, session: &TuiSession) {
     match session.app().mode {
         AppMode::Welcome => render_welcome(frame, session.app()),
-        AppMode::Main => render_session_main(frame, session),
+        AppMode::Main => render_session_main(frame, session, None),
+    }
+}
+
+pub fn render_session_frame_with_layout(
+    frame: &mut Frame<'_>,
+    session: &TuiSession,
+    layout: &LayoutRects,
+) {
+    match session.app().mode {
+        AppMode::Welcome => render_welcome(frame, session.app()),
+        AppMode::Main => render_session_main(frame, session, Some(layout)),
     }
 }
 
@@ -51,11 +93,11 @@ fn render_main(frame: &mut Frame<'_>, app: &AppState) {
         vec![Line::raw("Tasks")]
     };
 
-    render_main_shell(frame, app, items, task_content, "Filters", "Tasks", None);
+    render_main_shell(frame, app, items, task_content, "Filters", "Tasks", None, None, 0);
     render_overlays(frame, app);
 }
 
-fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
+fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession, layout: Option<&LayoutRects>) {
     let app = session.app();
 
     // Pre-compute task pane width for hanging-indent word wrap
@@ -95,6 +137,11 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
             ListItem::new(sidebar_label(item, session.smart_lists())).style(style)
         })
         .collect::<Vec<_>>();
+
+    let selected_sidebar_index = session
+        .sidebar_items()
+        .iter()
+        .position(|item| *item == session.active_sidebar_item());
 
     let sidebar_title = active_filter_title(&session.active_sidebar_item(), session.smart_lists());
     let tasks_title = format!("{} ({})", sidebar_title, session.visible_tasks().len());
@@ -193,6 +240,24 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
         }
     }
 
+    // Pre-compute scroll offset: use manual override if set, otherwise auto-follow selection.
+    let scroll_offset = if let Some(override_offset) = session.task_scroll_offset_override() {
+        override_offset
+    } else {
+        // Estimate pane dimensions for scroll calculation (matches render_main_shell layout).
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(frame.area());
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(24), Constraint::Min(24)])
+            .split(outer[0]);
+        let pane_height = chunks[1].height.saturating_sub(2) as usize;
+        let inner_width = chunks[1].width.saturating_sub(2);
+        compute_scroll_offset(&task_lines, selected_line_index, inner_width, pane_height)
+    };
+
     render_main_shell(
         frame,
         app,
@@ -200,7 +265,9 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession) {
         task_lines,
         &sidebar_title,
         &tasks_title,
-        selected_line_index,
+        selected_sidebar_index,
+        layout,
+        scroll_offset,
     );
     render_overlays(frame, app);
 }
@@ -212,7 +279,9 @@ fn render_main_shell(
     task_content: Vec<Line<'_>>,
     sidebar_title: &str,
     tasks_title: &str,
-    selected_line_index: Option<usize>,
+    selected_sidebar_index: Option<usize>,
+    layout: Option<&LayoutRects>,
+    scroll_offset: u16,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -224,15 +293,53 @@ fn render_main_shell(
         .constraints([Constraint::Length(24), Constraint::Min(24)])
         .split(outer[0]);
 
-    frame.render_widget(
-        List::new(sidebar).block(panel(sidebar_title, app.focus == FocusArea::Sidebar)),
+    let sidebar_item_count = sidebar.len();
+    let mut list_state = ListState::default().with_selected(selected_sidebar_index);
+    frame.render_stateful_widget(
+        List::new(sidebar)
+            .block(panel(sidebar_title, app.focus == FocusArea::Sidebar))
+            .scroll_padding(1),
         chunks[0],
+        &mut list_state,
     );
+
+    let sidebar_visible_height = chunks[0].height.saturating_sub(2) as usize;
+    if sidebar_item_count > sidebar_visible_height {
+        let mut scrollbar_state =
+            ScrollbarState::new(sidebar_item_count.saturating_sub(sidebar_visible_height))
+                .position(list_state.offset());
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            chunks[0].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 
     let pane_height = chunks[1].height.saturating_sub(2) as usize;
     let inner_width = chunks[1].width.saturating_sub(2);
-    let scroll_offset =
-        compute_scroll_offset(&task_content, selected_line_index, inner_width, pane_height);
+
+    let visual_line_count = if inner_width > 0 {
+        Paragraph::new(task_content.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width) as usize
+    } else {
+        0
+    };
+
+    if let Some(layout) = layout {
+        layout.set(Rects {
+            sidebar: chunks[0],
+            task_pane: chunks[1],
+            sidebar_item_count,
+            sidebar_offset: list_state.offset(),
+            task_pane_inner_width: inner_width,
+            visual_line_count,
+            pane_height,
+        });
+    }
 
     frame.render_widget(
         Paragraph::new(task_content)
@@ -241,6 +348,20 @@ fn render_main_shell(
             .scroll((scroll_offset, 0)),
         chunks[1],
     );
+
+    if visual_line_count > pane_height {
+        let mut task_scrollbar_state =
+            ScrollbarState::new(visual_line_count.saturating_sub(pane_height))
+                .position(scroll_offset as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            chunks[1].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut task_scrollbar_state,
+        );
+    }
 
     frame.render_widget(render_help_bar(app), outer[1]);
 }

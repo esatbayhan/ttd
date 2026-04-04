@@ -251,21 +251,19 @@ fn quick_entry_hidden_by_current_filter_preserves_previous_selection() {
     let expected_file_name = session.selected_task().unwrap().id.file_name().to_string();
     let expected_description = session.selected_task().unwrap().task.description.clone();
 
-    // Create a task without +Admin project - it won't appear in the +Admin view
+    // Quick entry in a project view auto-appends the project tag, so the
+    // new task appears in the current +Admin view and gets selected.
     session.dispatch_key("a").unwrap();
     for key in ["O", "t", "h", "e", "r", " ", "t", "a", "s", "k"] {
         session.dispatch_key(key).unwrap();
     }
     session.dispatch_key("enter").unwrap();
 
-    assert_eq!(session.visible_tasks().len(), 2);
-    assert_eq!(
-        session.selected_task().unwrap().id.file_name(),
-        expected_file_name
-    );
-    assert_eq!(
-        session.selected_task().unwrap().task.description,
-        expected_description
+    assert_eq!(session.visible_tasks().len(), 3);
+    let selected = session.selected_task().unwrap();
+    assert!(
+        selected.task.description.contains("Other task"),
+        "newly created task should be selected"
     );
 }
 

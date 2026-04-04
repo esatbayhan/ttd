@@ -90,6 +90,12 @@ impl EditorState {
         Self::build(EditorMode::QuickEntry, String::new(), None, None)
     }
 
+    pub fn set_suffix(&mut self, suffix: &str) {
+        self.raw_line = format!(" {suffix}");
+        self.cursor_pos = 0;
+        self.refresh_helpers_from_raw();
+    }
+
     pub fn edit(task: &SelectedTask) -> Self {
         Self::build(
             EditorMode::Edit,

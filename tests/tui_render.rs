@@ -761,6 +761,80 @@ fn compute_scroll_offset_handles_word_boundary_wrapping() {
 }
 
 #[test]
+fn sidebar_scrollbar_appears_when_items_overflow() {
+    let root = temp_path("sidebar-scroll");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    // Create enough projects to overflow a short terminal (10 rows tall)
+    for i in 0..20 {
+        fs::write(
+            root.join(format!("proj{i:02}.txt")),
+            format!("Task {i} +Project{i}\n"),
+        )
+        .unwrap();
+    }
+
+    let session = TuiSession::open(root, "2026-04-01").unwrap();
+
+    let backend = TestBackend::new(80, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_session_frame(frame, &session))
+        .unwrap();
+
+    // The scrollbar track character "│" or thumb "█" should appear
+    // in the rightmost column of the sidebar area (column 23, inside border).
+    let buf = terminal.backend().buffer();
+    let sidebar_right_col = 23u16;
+    let mut found_thumb = false;
+    for row in 1..9u16 {
+        let symbol = buf[(sidebar_right_col, row)].symbol();
+        if symbol == "█" || symbol == "▐" || symbol == "░" {
+            found_thumb = true;
+            break;
+        }
+    }
+    assert!(found_thumb, "expected scrollbar thumb in sidebar right edge");
+}
+
+#[test]
+fn task_pane_scrollbar_appears_when_tasks_overflow() {
+    let root = temp_path("task-scroll");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    for i in 0..20 {
+        fs::write(
+            root.join(format!("{i:02}.txt")),
+            format!("Task number {i}\n"),
+        )
+        .unwrap();
+    }
+
+    let mut session = TuiSession::open(root, "2026-04-01").unwrap();
+    session.app_mut().focus = FocusArea::TaskList;
+
+    let backend = TestBackend::new(80, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_session_frame(frame, &session))
+        .unwrap();
+
+    // The scrollbar should appear on the rightmost column of the task pane
+    // (column 79, inside the right border).
+    let buf = terminal.backend().buffer();
+    let task_pane_right_col = 79u16;
+    let mut found_thumb = false;
+    for row in 1..11u16 {
+        let symbol = buf[(task_pane_right_col, row)].symbol();
+        if symbol == "█" || symbol == "▐" || symbol == "░" {
+            found_thumb = true;
+            break;
+        }
+    }
+    assert!(found_thumb, "expected scrollbar thumb in task pane right edge");
+}
+
+#[test]
 fn session_render_scroll_keeps_selected_visible_in_narrow_terminal() {
     let root = temp_path("narrow-scroll");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
@@ -805,3 +879,112 @@ fn session_render_scroll_keeps_selected_visible_in_narrow_terminal() {
         "selected task marker '>' for Task 9 should be visible in narrow terminal"
     );
 }
+
+#[test]
+fn sidebar_scrollbar_hidden_when_items_fit() {
+    let root = temp_path("sidebar-no-scroll");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Only task +Proj @ctx\n").unwrap();
+
+    let session = TuiSession::open(root, "2026-04-01").unwrap();
+
+    // Tall terminal — sidebar items easily fit
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_session_frame(frame, &session))
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let sidebar_right_col = 23u16;
+    for row in 1..29u16 {
+        let symbol = buf[(sidebar_right_col, row)].symbol();
+        assert!(
+            symbol != "█" && symbol != "▐" && symbol != "░",
+            "unexpected scrollbar thumb at row {row} when content fits"
+        );
+    }
+}
+
+#[test]
+fn task_pane_scrollbar_hidden_when_tasks_fit() {
+    let root = temp_path("task-no-scroll");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Only task\n").unwrap();
+
+    let session = TuiSession::open(root, "2026-04-01").unwrap();
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_session_frame(frame, &session))
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let task_pane_right_col = 79u16;
+    for row in 1..29u16 {
+        let symbol = buf[(task_pane_right_col, row)].symbol();
+        assert!(
+            symbol != "█" && symbol != "▐" && symbol != "░",
+            "unexpected scrollbar thumb at row {row} when tasks fit"
+        );
+    }
+}
+
+#[test]
+fn scrollbar_thumb_reaches_bottom_when_last_task_selected() {
+    let root = temp_path("scroll-bottom");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    for i in 0..30 {
+        fs::write(
+            root.join(format!("{i:02}.txt")),
+            format!("Task number {i}\n"),
+        )
+        .unwrap();
+    }
+
+    let mut session = TuiSession::open(root, "2026-04-01").unwrap();
+    session.app_mut().focus = FocusArea::TaskList;
+
+    // Navigate to the very last task
+    for _ in 0..29 {
+        session.dispatch_key("j").unwrap();
+    }
+
+    let backend = TestBackend::new(80, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_session_frame(frame, &session))
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let task_pane_right_col = 79u16;
+    let pane_bottom = 12u16; // 14 - 2 (borders) = 12 inner rows, last inner row is 12
+
+    // Dump the scrollbar column for debugging
+    let mut col_dump = String::new();
+    for row in 0..14u16 {
+        let sym = buf[(task_pane_right_col, row)].symbol();
+        col_dump.push_str(&format!("row {row:2}: '{sym}'\n"));
+    }
+
+    // The row just above the bottom border end-symbol should be thumb, not track
+    // With default ratatui scrollbar: row 1 = ▲, rows 2..11 = track/thumb, row 12 = ▼
+    // When at bottom, the thumb should extend to the row just above ▼
+    let end_symbol_row = (1..13u16)
+        .rev()
+        .find(|&r| buf[(task_pane_right_col, r)].symbol() == "▼");
+    let thumb_bottom = end_symbol_row.map(|r| r - 1).unwrap_or(pane_bottom);
+
+    let symbol_above_end = buf[(task_pane_right_col, thumb_bottom)].symbol();
+    assert!(
+        symbol_above_end == "█" || symbol_above_end == "▐" || symbol_above_end == "░",
+        "scrollbar thumb should reach the bottom when last task is selected.\n\
+         Row {thumb_bottom} symbol: '{symbol_above_end}'\n\
+         Column dump:\n{col_dump}"
+    );
+}
+

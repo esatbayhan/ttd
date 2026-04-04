@@ -9,6 +9,8 @@ use crate::store::{Snapshot, StoredTask, TaskId, TaskStore};
 use crate::task::Task;
 use crate::tui::app::{AppAction, AppMode, AppState, FocusArea};
 use crate::tui::editor::{ConflictChoice, EditorState, SelectedTask};
+use crate::tui::widgets::render_task_lines;
+use ratatui::widgets::{Paragraph, Wrap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarItem {
@@ -99,6 +101,7 @@ pub struct TuiSession {
     visible_tasks: Vec<StoredTask>,
     visible_groups: Vec<crate::smartlist::TaskGroup>,
     selected_task_index: Option<usize>,
+    task_scroll_override: Option<u16>,
     fs_index: Option<SnapshotIndex>,
 }
 
@@ -128,6 +131,7 @@ impl TuiSession {
             visible_tasks: Vec::new(),
             visible_groups: Vec::new(),
             selected_task_index: None,
+            task_scroll_override: None,
             fs_index: None,
         }
     }
@@ -149,6 +153,7 @@ impl TuiSession {
             visible_tasks: Vec::new(),
             visible_groups: Vec::new(),
             selected_task_index: None,
+            task_scroll_override: None,
             fs_index,
         };
         session.rebuild();
@@ -195,9 +200,124 @@ impl TuiSession {
             .and_then(|index| self.visible_tasks.get(index))
     }
 
+    pub fn task_scroll_offset_override(&self) -> Option<u16> {
+        self.task_scroll_override
+    }
+
+    pub fn task_scroll_offset(&self) -> u16 {
+        self.task_scroll_override.unwrap_or(0)
+    }
+
+    /// Map a visual row (0-based, relative to inner task pane area) to a task
+    /// index. Accounts for scroll offset, search bar, group headers, text
+    /// wrapping, and separator lines between tasks.
+    pub fn task_index_for_visual_row(
+        &self,
+        visual_row: usize,
+        task_pane_inner_width: u16,
+    ) -> Option<usize> {
+        if self.visible_tasks.is_empty() {
+            return None;
+        }
+
+        let scroll = self.task_scroll_override.unwrap_or(0) as usize;
+        let absolute_row = visual_row + scroll;
+
+        let mut current_line = 0;
+
+        // Account for search bar
+        if self.app.search_active || !self.app.search_query.is_empty() {
+            current_line += 2; // search line + blank line
+        }
+
+        let groups = self.visible_groups();
+        let show_group_headers =
+            groups.len() > 1 || groups.first().is_some_and(|g| !g.label.is_empty());
+
+        let mut task_flat_index = 0;
+
+        if show_group_headers {
+            for (gi, group) in groups.iter().enumerate() {
+                if !group.label.is_empty() {
+                    if gi > 0 {
+                        current_line += 1; // separator before group
+                    }
+                    current_line += 1; // group header
+                }
+                for (i, stored) in group.tasks.iter().enumerate() {
+                    let task_start = current_line;
+                    let line_count = visual_line_count_for_task(
+                        &stored.task,
+                        task_pane_inner_width,
+                    );
+                    current_line += line_count;
+                    if absolute_row >= task_start && absolute_row < current_line {
+                        return Some(task_flat_index);
+                    }
+                    if i < group.tasks.len() - 1 {
+                        current_line += 1; // blank line between tasks
+                    }
+                    task_flat_index += 1;
+                }
+            }
+        } else {
+            for (i, stored) in self.visible_tasks.iter().enumerate() {
+                let task_start = current_line;
+                let line_count = visual_line_count_for_task(
+                    &stored.task,
+                    task_pane_inner_width,
+                );
+                current_line += line_count;
+                if absolute_row >= task_start && absolute_row < current_line {
+                    return Some(i);
+                }
+                if i < self.visible_tasks.len() - 1 {
+                    current_line += 1; // separator
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn apply_task_scroll(&mut self, delta: isize, visual_line_count: usize, pane_height: usize) {
+        let max_offset = visual_line_count.saturating_sub(pane_height);
+        let current = self.task_scroll_override.unwrap_or(0) as isize;
+        let new_offset = (current + delta).clamp(0, max_offset as isize) as u16;
+        self.task_scroll_override = Some(new_offset);
+    }
+
+    pub fn apply_sidebar_scroll(&mut self, delta: isize) {
+        self.move_sidebar(delta);
+    }
+
     pub fn select_sidebar_item(&mut self, item: SidebarItem) {
         self.active_sidebar_item = item;
         self.rebuild_visible_tasks();
+    }
+
+    pub fn dispatch_mouse_sidebar(&mut self, sidebar_index: usize) {
+        if let Some(item) = self.sidebar_items.get(sidebar_index).cloned() {
+            self.app.focus = FocusArea::Sidebar;
+            self.select_sidebar_item(item);
+        }
+    }
+
+    pub fn dispatch_mouse_task_select(&mut self, task_index: usize) {
+        if task_index < self.visible_tasks.len() {
+            self.app.focus = FocusArea::TaskList;
+            self.selected_task_index = Some(task_index);
+            let scroll = self.task_scroll_override;
+            self.sync_selected_task();
+            self.task_scroll_override = scroll;
+        }
+    }
+
+    pub fn dispatch_mouse_task_edit(&mut self) -> io::Result<()> {
+        if let Some(action) = self.app.handle_key("e") {
+            self.apply_action(action)?;
+        }
+        Ok(())
     }
 
     pub fn refresh(&mut self) -> io::Result<()> {
@@ -279,6 +399,7 @@ impl TuiSession {
     }
 
     fn rebuild_visible_tasks(&mut self) {
+        self.task_scroll_override = None;
         self.visible_tasks = apply_search_filter(
             filter_snapshot(
                 &self.snapshot,
@@ -398,6 +519,19 @@ impl TuiSession {
                     self.refresh()?;
                 }
             }
+            AppAction::AddTask => {
+                let suffix = match &self.active_sidebar_item {
+                    SidebarItem::Project(value) | SidebarItem::Context(value) => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(suffix) = suffix {
+                    if let Some(editor) = self.app.editor.as_mut() {
+                        editor.set_suffix(&suffix);
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -489,6 +623,7 @@ impl TuiSession {
     }
 
     fn sync_selected_task(&mut self) {
+        self.task_scroll_override = None;
         self.app.selected_task = self.selected_task_index.and_then(|index| {
             self.visible_tasks.get(index).map(|stored| {
                 SelectedTask::with_original_raw(
@@ -744,6 +879,18 @@ fn apply_search_filter(tasks: Vec<StoredTask>, query: &str) -> Vec<StoredTask> {
         .into_iter()
         .filter(|stored| stored.task.raw.to_lowercase().contains(&query_lower))
         .collect()
+}
+
+/// Compute the true visual line count for a task, matching what
+/// `Paragraph::wrap` produces at render time.
+fn visual_line_count_for_task(task: &Task, width: u16) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let lines = render_task_lines(task, false, width);
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .line_count(width)
 }
 
 fn ordered_tasks(snapshot: &Snapshot, today: &str) -> Vec<StoredTask> {
