@@ -4,6 +4,50 @@ use super::editor::{
 };
 use super::events::normalize_key;
 use super::render::EDITOR_MODAL_WIDTH;
+use crate::smartlist::Field;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    Sort,
+    Group,
+}
+
+#[derive(Debug, Clone)]
+pub struct PickerState {
+    pub kind: PickerKind,
+    pub items: Vec<Field>,
+    pub selected_index: usize,
+}
+
+impl PickerState {
+    pub fn new(kind: PickerKind) -> Self {
+        Self {
+            kind,
+            items: vec![
+                Field::Priority,
+                Field::Due,
+                Field::Scheduled,
+                Field::Starting,
+                Field::CreationDate,
+            ],
+            selected_index: 0,
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected_index < self.items.len() - 1 {
+            self.selected_index += 1;
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        self.selected_index = self.selected_index.saturating_sub(1);
+    }
+
+    pub fn selected_field(&self) -> &Field {
+        &self.items[self.selected_index]
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -30,7 +74,6 @@ pub enum AppAction {
     AddTask,
     EditTask,
     ToggleDone,
-    RestoreCompleted,
     Refresh,
     ConfirmDelete,
     EnterSearch,
@@ -51,6 +94,12 @@ pub enum AppAction {
     RejectEditorShortcut(EditorShortcut),
     SubmitEditor,
     ResolveConflict(ConflictChoice),
+    OpenSortPicker,
+    OpenGroupPicker,
+    DeactivateSort,
+    DeactivateGroup,
+    ReverseSort,
+    PickerSelect,
 }
 
 pub struct AppState {
@@ -64,6 +113,7 @@ pub struct AppState {
     pub editor: Option<EditorState>,
     pub save_conflict: Option<SaveConflictState>,
     pub should_quit: bool,
+    pub picker: Option<PickerState>,
 }
 
 impl AppState {
@@ -79,6 +129,7 @@ impl AppState {
             editor: None,
             save_conflict: None,
             should_quit: false,
+            picker: None,
         }
     }
 
@@ -118,6 +169,10 @@ impl AppState {
             return self.handle_editor_key(key);
         }
 
+        if self.picker.is_some() {
+            return self.handle_picker_key(key);
+        }
+
         if self.confirm_delete {
             return match key {
                 "enter" => Some(AppAction::OpenSelected),
@@ -148,6 +203,17 @@ impl AppState {
         }
 
         match key {
+            "s" => {
+                self.picker = Some(PickerState::new(PickerKind::Sort));
+                Some(AppAction::OpenSortPicker)
+            }
+            "S" => Some(AppAction::DeactivateSort),
+            "o" => {
+                self.picker = Some(PickerState::new(PickerKind::Group));
+                Some(AppAction::OpenGroupPicker)
+            }
+            "O" => Some(AppAction::DeactivateGroup),
+            "r" => Some(AppAction::ReverseSort),
             "q" => {
                 self.should_quit = true;
                 Some(AppAction::Quit)
@@ -184,7 +250,6 @@ impl AppState {
                 Some(AppAction::EditTask)
             }
             "x" => Some(AppAction::ToggleDone),
-            "r" => Some(AppAction::RestoreCompleted),
             "D" => {
                 self.confirm_delete = true;
                 Some(AppAction::ConfirmDelete)
@@ -298,6 +363,17 @@ impl AppState {
                 editor.append_raw_char(key);
                 Some(AppAction::AppendToEditor(key.to_string()))
             }
+            _ => None,
+        }
+    }
+
+    fn handle_picker_key(&mut self, key: &str) -> Option<AppAction> {
+        let picker = self.picker.as_mut()?;
+        match key {
+            "j" | "down" => { picker.move_down(); None }
+            "k" | "up" => { picker.move_up(); None }
+            "enter" => Some(AppAction::PickerSelect),
+            "esc" => { self.picker = None; Some(AppAction::Cancel) }
             _ => None,
         }
     }

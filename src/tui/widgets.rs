@@ -38,6 +38,13 @@ fn help_bar_entries(app: &AppState) -> Vec<(&'static str, &'static str)> {
     if app.save_conflict.is_some() {
         return vec![("r", "reload"), ("o", "overwrite"), ("c", "cancel")];
     }
+    if app.picker.is_some() {
+        return vec![
+            ("j/k", "nav"),
+            ("enter", "select"),
+            ("esc", "cancel"),
+        ];
+    }
     if app.editor.as_ref().is_some_and(|e| e.shortcut.is_some()) {
         return vec![("enter", "apply"), ("esc", "cancel")];
     }
@@ -61,8 +68,11 @@ fn help_bar_entries(app: &AppState) -> Vec<(&'static str, &'static str)> {
         ("h/l", "focus"),
         ("a", "add"),
         ("e", "edit"),
-        ("x", "done"),
+        ("x", "toggle done"),
         ("D", "delete"),
+        ("s", "sort"),
+        ("o", "group"),
+        ("r", "reverse"),
         ("/", "search"),
         ("q", "quit"),
     ]

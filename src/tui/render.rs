@@ -23,6 +23,7 @@ pub struct Rects {
     pub task_pane_inner_width: u16,
     pub visual_line_count: usize,
     pub pane_height: usize,
+    pub task_scroll_offset: u16,
 }
 
 #[derive(Default)]
@@ -144,11 +145,13 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession, layout: Opti
         .position(|item| *item == session.active_sidebar_item());
 
     let sidebar_title = active_filter_title(&session.active_sidebar_item(), session.smart_lists());
-    let tasks_title = format!("{} ({})", sidebar_title, session.visible_tasks().len());
+    let indicator = session.override_indicator();
+    let tasks_title = format!("{} ({}){}", sidebar_title, session.visible_tasks().len(), indicator);
 
     let mut task_lines: Vec<Line> = Vec::new();
 
-    let mut selected_line_index: Option<usize> = None;
+    let mut selected_first_line: Option<usize> = None;
+    let mut selected_last_line: Option<usize> = None;
     let mut line_count: usize = 0;
 
     if !app.search_query.is_empty() {
@@ -201,11 +204,13 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession, layout: Opti
                     .as_ref()
                     .is_some_and(|selected| selected.id == stored.id);
                 let lines = render_task_lines(&stored.task, is_selected, task_pane_inner_width);
+                let first = line_count;
                 line_count += lines.len();
                 task_lines.extend(lines);
 
                 if is_selected {
-                    selected_line_index = Some(line_count - 1);
+                    selected_first_line = Some(first);
+                    selected_last_line = Some(line_count - 1);
                 }
 
                 if i < group.tasks.len() - 1 {
@@ -222,11 +227,13 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession, layout: Opti
                 .as_ref()
                 .is_some_and(|selected| selected.id == stored.id);
             let lines = render_task_lines(&stored.task, is_selected, task_pane_inner_width);
+            let first = line_count;
             line_count += lines.len();
             task_lines.extend(lines);
 
             if is_selected {
-                selected_line_index = Some(line_count - 1);
+                selected_first_line = Some(first);
+                selected_last_line = Some(line_count - 1);
             }
 
             if i < task_count - 1 {
@@ -255,7 +262,8 @@ fn render_session_main(frame: &mut Frame<'_>, session: &TuiSession, layout: Opti
             .split(outer[0]);
         let pane_height = chunks[1].height.saturating_sub(2) as usize;
         let inner_width = chunks[1].width.saturating_sub(2);
-        compute_scroll_offset(&task_lines, selected_line_index, inner_width, pane_height)
+        let previous = layout.and_then(|l| l.get()).map(|r| r.task_scroll_offset);
+        compute_scroll_offset_with_previous(&task_lines, selected_first_line, selected_last_line, inner_width, pane_height, previous)
     };
 
     render_main_shell(
@@ -294,11 +302,13 @@ fn render_main_shell(
         .split(outer[0]);
 
     let sidebar_item_count = sidebar.len();
-    let mut list_state = ListState::default().with_selected(selected_sidebar_index);
+    let previous_offset = layout.and_then(|l| l.get()).map(|r| r.sidebar_offset).unwrap_or(0);
+    let mut list_state = ListState::default()
+        .with_selected(selected_sidebar_index)
+        .with_offset(previous_offset);
     frame.render_stateful_widget(
         List::new(sidebar)
-            .block(panel(sidebar_title, app.focus == FocusArea::Sidebar))
-            .scroll_padding(1),
+            .block(panel(sidebar_title, app.focus == FocusArea::Sidebar)),
         chunks[0],
         &mut list_state,
     );
@@ -338,6 +348,7 @@ fn render_main_shell(
             task_pane_inner_width: inner_width,
             visual_line_count,
             pane_height,
+            task_scroll_offset: scroll_offset,
         });
     }
 
@@ -367,6 +378,37 @@ fn render_main_shell(
 }
 
 fn render_overlays(frame: &mut Frame<'_>, app: &AppState) {
+    if let Some(picker) = app.picker.as_ref() {
+        let title = match picker.kind {
+            super::app::PickerKind::Sort => "Sort by",
+            super::app::PickerKind::Group => "Group by",
+        };
+
+        let items: Vec<ListItem> = picker
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                let label = crate::smartlist::field_display_name(field);
+                let style = if i == picker.selected_index {
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::White).bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("  {label}")).style(style)
+            })
+            .collect();
+
+        let modal_height = (items.len() as u16) + 2;
+        let modal_width = 24;
+        let modal = centered_rect(frame.area(), modal_width, modal_height);
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+            modal,
+        );
+    }
+
     if let Some(editor) = app.editor.as_ref() {
         let title = match editor.mode {
             EditorMode::QuickEntry => "Quick Entry",
@@ -556,21 +598,55 @@ pub fn compute_scroll_offset(
     inner_width: u16,
     pane_height: usize,
 ) -> u16 {
-    let Some(sel_idx) = selected_line_index else {
+    compute_scroll_offset_with_previous(lines, selected_line_index, selected_line_index, inner_width, pane_height, None)
+}
+
+pub fn compute_scroll_offset_with_previous(
+    lines: &[Line<'_>],
+    selected_first_line: Option<usize>,
+    selected_last_line: Option<usize>,
+    inner_width: u16,
+    pane_height: usize,
+    previous_offset: Option<u16>,
+) -> u16 {
+    let Some(first_idx) = selected_first_line else {
         return 0;
     };
-    if inner_width == 0 || pane_height == 0 || sel_idx >= lines.len() {
+    let last_idx = selected_last_line.unwrap_or(first_idx);
+    if inner_width == 0 || pane_height == 0 || last_idx >= lines.len() {
         return 0;
     }
-    let prefix = lines[..=sel_idx].to_vec();
-    let visual_row_end = Paragraph::new(prefix)
-        .wrap(Wrap { trim: false })
-        .line_count(inner_width);
-    if visual_row_end > pane_height {
-        (visual_row_end - pane_height) as u16
+
+    // Compute the visual row range of the selected item.
+    let visual_row_end = {
+        let prefix = lines[..=last_idx].to_vec();
+        Paragraph::new(prefix)
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
+    };
+    let visual_row_start = if first_idx > 0 {
+        let prefix = lines[..first_idx].to_vec();
+        Paragraph::new(prefix)
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
     } else {
         0
+    };
+
+    let current = previous_offset.unwrap_or(0) as usize;
+
+    // If the selected item is fully visible, keep current offset.
+    if visual_row_start >= current && visual_row_end <= current + pane_height {
+        return current as u16;
     }
+
+    // Selected item is above the viewport — scroll up to show it at top.
+    if visual_row_start < current {
+        return visual_row_start as u16;
+    }
+
+    // Selected item is below the viewport — scroll down to show it at bottom.
+    (visual_row_end.saturating_sub(pane_height)) as u16
 }
 
 fn centered_rect(area: ratatui::layout::Rect, width: u16, height: u16) -> ratatui::layout::Rect {

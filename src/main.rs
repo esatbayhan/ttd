@@ -316,6 +316,7 @@ fn app_accepts_compound_tokens(app: &AppState) -> bool {
         && !app.confirm_delete
         && app.editor.is_none()
         && app.save_conflict.is_none()
+        && app.picker.is_none()
 }
 
 fn key_token_from_event(event: &Event) -> Option<String> {

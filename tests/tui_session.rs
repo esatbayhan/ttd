@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[allow(unused_imports)]
 use ttd::tui::editor::{EditorState, SaveConflictState};
 use ttd::tui::session::{SidebarItem, TuiSession};
 
@@ -404,20 +405,21 @@ fn delete_confirmation_removes_the_selected_done_task() {
 }
 
 #[test]
-fn restore_moves_selected_done_task_back_to_open_view() {
-    let root = temp_path("restore");
+fn x_restores_done_task_back_to_open() {
+    let root = temp_path("x-restore");
     fs::create_dir_all(root.join("done.txt.d")).unwrap();
     write_standard_lists(&root);
     fs::write(root.join("done.txt.d/a.txt"), "x 2026-03-29 Call Mom\n").unwrap();
 
     let mut session = TuiSession::open(root.clone(), "2026-03-30").unwrap();
-    session.select_sidebar_item(SidebarItem::SmartList(1));
+    session.select_sidebar_item(SidebarItem::SmartList(1)); // Done list
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
-    session.dispatch_key("r").unwrap();
+    session.dispatch_key("x").unwrap();
 
     assert!(root.join("a.txt").exists());
     assert!(!root.join("done.txt.d/a.txt").exists());
 }
+
 
 #[test]
 fn toggling_done_preserves_selection_in_project_view() {
@@ -480,7 +482,7 @@ fn restoring_done_task_preserves_selection_in_project_view() {
         "Zulu +Family"
     );
 
-    session.dispatch_key("r").unwrap();
+    session.dispatch_key("x").unwrap();
 
     let selected = session.selected_task().unwrap();
     assert_eq!(selected.task.description, "Zulu +Family");
@@ -505,7 +507,7 @@ fn restoring_done_preserves_selected_duplicate_file_in_project_view() {
     session.dispatch_key("j").unwrap();
     assert_eq!(session.selected_task().unwrap().id.file_name(), "b.txt");
 
-    session.dispatch_key("r").unwrap();
+    session.dispatch_key("x").unwrap();
 
     let selected = session.selected_task().unwrap();
     assert_eq!(selected.id.file_name(), "b.txt");
@@ -538,7 +540,7 @@ fn editing_open_task_to_done_moves_it_into_done_view_coherently() {
     assert!(session.visible_tasks()[0].task.done);
 
     session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
-    session.dispatch_key("r").unwrap();
+    session.dispatch_key("x").unwrap();
     assert!(root.join("a.txt").exists());
     assert!(!root.join("done.txt.d/a.txt").exists());
 }
@@ -787,4 +789,308 @@ fn poll_refresh_is_noop_when_editor_is_open() {
 
     assert!(!changed);
     assert_eq!(session.visible_tasks().len(), 1);
+}
+
+#[test]
+fn view_overrides_sort_replaces_smart_list_sort() {
+    let root = temp_path("override-sort");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n\nsort by priority asc\n").unwrap();
+    fs::write(root.join("a.txt"), "(B) Beta due:2026-04-01\n").unwrap();
+    fs::write(root.join("b.txt"), "(A) Alpha due:2026-04-05\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    assert!(session.visible_tasks()[0].task.priority == Some('A'));
+
+    session.set_sort_override(ttd::smartlist::Directive {
+        field: ttd::smartlist::Field::Due,
+        direction: ttd::smartlist::Direction::Asc,
+    });
+    assert!(session.visible_tasks()[0].task.priority == Some('B'));
+}
+
+#[test]
+fn reverse_sort_flips_smart_list_default_order() {
+    let root = temp_path("reverse-sort");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n\nsort by priority asc\n").unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    assert!(session.visible_tasks()[0].task.priority == Some('A'));
+    session.toggle_reverse_sort();
+    assert!(session.visible_tasks()[0].task.priority == Some('B'));
+}
+
+#[test]
+fn view_overrides_group_replaces_smart_list_group() {
+    let root = temp_path("override-group");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n").unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    assert_eq!(session.visible_groups().len(), 1);
+    assert!(session.visible_groups()[0].label.is_empty());
+
+    session.set_group_override(ttd::smartlist::Directive {
+        field: ttd::smartlist::Field::Priority,
+        direction: ttd::smartlist::Direction::Asc,
+    });
+    assert!(session.visible_groups().len() >= 2);
+    assert!(session.visible_groups()[0].label.contains("Priority"));
+}
+
+#[test]
+fn view_overrides_cleared_on_sidebar_item_change() {
+    let root = temp_path("override-clear");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n").unwrap();
+    fs::write(lists_dir.join("done.list"), "---\nname: Done\norder: 2\n---\ndone\n").unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.set_group_override(ttd::smartlist::Directive {
+        field: ttd::smartlist::Field::Priority,
+        direction: ttd::smartlist::Direction::Asc,
+    });
+    session.toggle_reverse_sort();
+    assert!(session.view_overrides().has_group_override());
+    assert!(session.view_overrides().has_sort_override());
+
+    session.select_sidebar_item(SidebarItem::SmartList(1));
+    assert!(!session.view_overrides().has_group_override());
+    assert!(!session.view_overrides().has_sort_override());
+}
+
+#[test]
+fn jk_navigation_follows_visual_group_order() {
+    let root = temp_path("jk-group-order");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("all.list"),
+        "---\nname: All\norder: 1\n---\nnot done\n\ngroup by priority asc\n",
+    )
+    .unwrap();
+    // Three tasks: two with priority A, one with B.
+    // Group order: A group first (asc), then B group.
+    fs::write(root.join("a.txt"), "(B) Beta\n").unwrap();
+    fs::write(root.join("b.txt"), "(A) Alpha\n").unwrap();
+    fs::write(root.join("c.txt"), "(A) Another\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+
+    // First selected task should be in the A group (first visually)
+    let first = session.selected_task().unwrap().task.priority;
+    assert_eq!(first, Some('A'), "first task should be in A group");
+
+    // Press j to move down -- should stay in A group or move to next A task
+    session.dispatch_key("j").unwrap();
+    let second = session.selected_task().unwrap().task.priority;
+    assert_eq!(second, Some('A'), "second task should still be in A group");
+
+    // Press j again -- should now be in B group
+    session.dispatch_key("j").unwrap();
+    let third = session.selected_task().unwrap().task.priority;
+    assert_eq!(third, Some('B'), "third task should be in B group");
+
+    // Press k to go back -- should return to A group
+    session.dispatch_key("k").unwrap();
+    let back = session.selected_task().unwrap().task.priority;
+    assert_eq!(back, Some('A'), "going back should return to A group");
+}
+
+#[test]
+fn s_opens_sort_picker_in_main_mode() {
+    let root = temp_path("sort-picker-open");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+    session.dispatch_key("s").unwrap();
+
+    assert!(session.app().picker.is_some());
+    let picker = session.app().picker.as_ref().unwrap();
+    assert_eq!(picker.kind, ttd::tui::app::PickerKind::Sort);
+}
+
+#[test]
+fn sort_picker_applies_selected_field_as_override() {
+    let root = temp_path("sort-picker-apply");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n\nsort by priority asc\n").unwrap();
+    fs::write(root.join("a.txt"), "(B) Beta due:2026-04-01\n").unwrap();
+    fs::write(root.join("b.txt"), "(A) Alpha due:2026-04-05\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+
+    session.dispatch_key("s").unwrap();
+    session.dispatch_key("j").unwrap(); // move to Due (index 1)
+    session.dispatch_key("enter").unwrap();
+
+    assert!(session.app().picker.is_none());
+    assert!(session.view_overrides().sort.is_some());
+    assert!(session.visible_tasks()[0].task.description.contains("Beta"));
+}
+
+#[test]
+fn r_reverses_current_sort_order() {
+    let root = temp_path("r-reverse");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n\nsort by priority asc\n").unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+    assert!(session.visible_tasks()[0].task.priority == Some('A'));
+
+    session.dispatch_key("r").unwrap();
+    assert!(session.visible_tasks()[0].task.priority == Some('B'));
+}
+
+#[test]
+fn shift_s_deactivates_sort_override() {
+    let root = temp_path("shift-s-deactivate");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(lists_dir.join("all.list"), "---\nname: All\norder: 1\n---\nnot done\n\nsort by priority asc\n").unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+
+    session.dispatch_key("r").unwrap();
+    assert!(session.view_overrides().has_sort_override());
+
+    session.dispatch_key("S").unwrap();
+    assert!(!session.view_overrides().has_sort_override());
+    assert!(session.visible_tasks()[0].task.priority == Some('A'));
+}
+
+#[test]
+fn reverse_sort_works_on_project_view_without_smart_list_directives() {
+    let root = temp_path("reverse-project-view");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "(A) Alpha +Work\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta +Work\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.select_sidebar_item(SidebarItem::Project("+Work".into()));
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+
+    let first_before = session.visible_tasks()[0].task.description.clone();
+    session.dispatch_key("r").unwrap();
+    let first_after = session.visible_tasks()[0].task.description.clone();
+
+    assert_ne!(first_before, first_after, "reverse should flip order");
+}
+
+#[test]
+fn full_override_workflow_sort_group_reverse_deactivate() {
+    let root = temp_path("full-override-workflow");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("all.list"),
+        "---\nname: All\norder: 1\n---\nnot done\n\nsort by priority asc\n",
+    )
+    .unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha due:2026-04-05\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta due:2026-04-01\n").unwrap();
+    fs::write(root.join("c.txt"), "(A) Charlie due:2026-04-03\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+
+    // Default: sorted by priority asc (A, A, B)
+    assert!(session.visible_tasks()[0].task.priority == Some('A'));
+
+    // Open sort picker, select Due (index 1)
+    session.dispatch_key("s").unwrap();
+    session.dispatch_key("j").unwrap();
+    session.dispatch_key("enter").unwrap();
+
+    // Now sorted by due asc: 2026-04-01, 2026-04-03, 2026-04-05
+    assert!(session.visible_tasks()[0].task.description.contains("Beta"));
+    assert!(!session.override_indicator().is_empty());
+
+    // Reverse
+    session.dispatch_key("r").unwrap();
+    assert!(session.visible_tasks()[0].task.description.contains("Alpha due:2026-04-05"));
+
+    // Open group picker, select Priority (index 0)
+    session.dispatch_key("o").unwrap();
+    session.dispatch_key("enter").unwrap();
+
+    assert!(session.visible_groups().len() >= 2);
+
+    // Deactivate group
+    session.dispatch_key("O").unwrap();
+    assert!(!session.view_overrides().has_group_override());
+    assert_eq!(session.visible_groups().len(), 1);
+
+    // Deactivate sort
+    session.dispatch_key("S").unwrap();
+    assert!(!session.view_overrides().has_sort_override());
+    // Back to default: priority asc
+    assert!(session.visible_tasks()[0].task.priority == Some('A'));
+}
+
+#[test]
+fn reversing_sort_reorders_groups_when_same_field() {
+    let root = temp_path("reverse-group-order");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    let lists_dir = root.join("lists.d");
+    fs::create_dir_all(&lists_dir).unwrap();
+    fs::write(
+        lists_dir.join("all.list"),
+        "---\nname: All\norder: 1\n---\nnot done\n",
+    )
+    .unwrap();
+    fs::write(root.join("a.txt"), "(A) Alpha\n").unwrap();
+    fs::write(root.join("b.txt"), "(B) Beta\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-30").unwrap();
+    session.app_mut().focus = ttd::tui::app::FocusArea::TaskList;
+
+    // Group by priority, sort by priority asc
+    session.dispatch_key("o").unwrap(); // group picker
+    session.dispatch_key("enter").unwrap(); // select priority
+    session.dispatch_key("s").unwrap(); // sort picker
+    session.dispatch_key("enter").unwrap(); // select priority
+
+    // Groups should be A first (asc)
+    assert!(session.visible_groups()[0].label.contains("A"));
+
+    // Reverse sort — groups should now be B first
+    session.dispatch_key("r").unwrap();
+    assert!(
+        session.visible_groups()[0].label.contains("B"),
+        "reversing sort should reorder groups when same field"
+    );
 }

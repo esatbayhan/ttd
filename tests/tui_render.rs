@@ -317,7 +317,6 @@ fn navigation_and_task_shortcuts_are_routed_to_actions() {
         ("a", Some(AppAction::AddTask)),
         ("e", Some(AppAction::EditTask)),
         ("x", Some(AppAction::ToggleDone)),
-        ("r", Some(AppAction::RestoreCompleted)),
         ("R", Some(AppAction::Refresh)),
         ("n", Some(AppAction::NextSearchResult)),
         ("N", Some(AppAction::PreviousSearchResult)),
@@ -538,7 +537,7 @@ fn session_render_includes_help_bar() {
     let text = render_text(&session);
 
     assert!(text.contains("add"), "help bar should contain 'add'");
-    assert!(text.contains("quit"), "help bar should contain 'quit'");
+    assert!(text.contains("toggle done"), "help bar should contain 'toggle done'");
 }
 
 #[test]
@@ -986,5 +985,55 @@ fn scrollbar_thumb_reaches_bottom_when_last_task_selected() {
          Row {thumb_bottom} symbol: '{symbol_above_end}'\n\
          Column dump:\n{col_dump}"
     );
+}
+
+#[test]
+fn picker_modal_renders_with_title_and_field_list() {
+    use ttd::tui::app::{PickerKind, PickerState};
+
+    let root = temp_path("picker-modal");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-31").unwrap();
+    session.app_mut().picker = Some(PickerState::new(PickerKind::Sort));
+
+    let text = render_text(&session);
+    assert!(text.contains("Sort by"), "picker should show 'Sort by' title");
+    assert!(text.contains("priority"), "picker should show 'priority' field");
+    assert!(text.contains("due"), "picker should show 'due' field");
+}
+
+#[test]
+fn task_pane_title_shows_sort_override_indicator() {
+    use ttd::smartlist::{Directive, Direction, Field};
+
+    let root = temp_path("sort-override-indicator");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-31").unwrap();
+    session.set_sort_override(Directive { field: Field::Due, direction: Direction::Asc });
+
+    let text = render_text(&session);
+    assert!(text.contains("[sort: due"), "task pane title should show sort override indicator");
+}
+
+#[test]
+fn task_pane_title_shows_group_override_indicator() {
+    use ttd::smartlist::{Directive, Direction, Field};
+
+    let root = temp_path("group-override-indicator");
+    fs::create_dir_all(root.join("done.txt.d")).unwrap();
+    write_standard_lists(&root);
+    fs::write(root.join("a.txt"), "Call Mom\n").unwrap();
+
+    let mut session = TuiSession::open(root, "2026-03-31").unwrap();
+    session.set_group_override(Directive { field: Field::Priority, direction: Direction::Asc });
+
+    let text = render_text(&session);
+    assert!(text.contains("[group: priority"), "task pane title should show group override indicator");
 }
 

@@ -610,6 +610,109 @@ pub fn evaluate(list: &SmartList, tasks: &[StoredTask], today: &str) -> Vec<Stor
     matched
 }
 
+pub fn filter_only(list: &SmartList, tasks: &[StoredTask], today: &str) -> Vec<StoredTask> {
+    if list.blocks.is_empty() {
+        return Vec::new();
+    }
+
+    let implied_not_done = !has_done_filter(list);
+
+    tasks
+        .iter()
+        .filter(|st| {
+            if implied_not_done && st.task.done {
+                return false;
+            }
+            list.blocks.iter().any(|block| {
+                block
+                    .conditions
+                    .iter()
+                    .all(|cond| eval_condition(cond, &st.task, today))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+pub fn sort_by_directives(tasks: &mut [StoredTask], directives: &[Directive]) {
+    tasks.sort_by(|a, b| {
+        for directive in directives {
+            let ka = task_sort_key(&a.task, &directive.field);
+            let kb = task_sort_key(&b.task, &directive.field);
+
+            let ord = match (&ka, &kb) {
+                (Some(va), Some(vb)) => va.cmp(vb),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            };
+
+            let ord = if directive.direction == Direction::Desc {
+                ord.reverse()
+            } else {
+                ord
+            };
+
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+}
+
+pub fn group_by_directives(directives: &[Directive], tasks: &[StoredTask]) -> Vec<TaskGroup> {
+    let directive = match directives.first() {
+        Some(d) => d,
+        None => {
+            return vec![TaskGroup {
+                label: String::new(),
+                tasks: tasks.to_vec(),
+            }];
+        }
+    };
+
+    let mut labeled: Vec<(String, StoredTask)> = Vec::new();
+    let mut no_value: Vec<StoredTask> = Vec::new();
+    let fallback_label = format!("No {}", field_display_name(&directive.field));
+
+    for st in tasks {
+        match task_group_key(&st.task, &directive.field) {
+            Some(key) => labeled.push((key, st.clone())),
+            None => no_value.push(st.clone()),
+        }
+    }
+
+    let mut group_map: std::collections::BTreeMap<String, Vec<StoredTask>> =
+        std::collections::BTreeMap::new();
+    for (key, st) in labeled {
+        group_map.entry(key).or_default().push(st);
+    }
+
+    let field_prefix = capitalize(field_display_name(&directive.field));
+    let mut groups: Vec<TaskGroup> = group_map
+        .into_iter()
+        .map(|(value, tasks)| TaskGroup {
+            label: format!("{field_prefix}: {value}"),
+            tasks,
+        })
+        .collect();
+
+    groups.sort_by(|a, b| match directive.direction {
+        Direction::Asc => a.label.cmp(&b.label),
+        Direction::Desc => b.label.cmp(&a.label),
+    });
+
+    if !no_value.is_empty() {
+        groups.push(TaskGroup {
+            label: fallback_label,
+            tasks: no_value,
+        });
+    }
+
+    groups
+}
+
 // ── Grouping ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -640,7 +743,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-fn field_display_name(field: &Field) -> &'static str {
+pub fn field_display_name(field: &Field) -> &'static str {
     match field {
         Field::Due => "due",
         Field::Scheduled => "scheduled",
@@ -655,58 +758,7 @@ fn field_display_name(field: &Field) -> &'static str {
 }
 
 pub fn group(list: &SmartList, tasks: &[StoredTask]) -> Vec<TaskGroup> {
-    let directive = match list.group_directives.first() {
-        Some(d) => d,
-        None => {
-            return vec![TaskGroup {
-                label: String::new(),
-                tasks: tasks.to_vec(),
-            }];
-        }
-    };
-
-    let mut labeled: Vec<(String, StoredTask)> = Vec::new();
-    let mut no_value: Vec<StoredTask> = Vec::new();
-    let fallback_label = format!("No {}", field_display_name(&directive.field));
-
-    for st in tasks {
-        match task_group_key(&st.task, &directive.field) {
-            Some(key) => labeled.push((key, st.clone())),
-            None => no_value.push(st.clone()),
-        }
-    }
-
-    // Collect unique labels preserving first-seen order, then sort
-    let mut group_map: std::collections::BTreeMap<String, Vec<StoredTask>> =
-        std::collections::BTreeMap::new();
-    for (key, st) in labeled {
-        group_map.entry(key).or_default().push(st);
-    }
-
-    let field_prefix = capitalize(field_display_name(&directive.field));
-    let mut groups: Vec<TaskGroup> = group_map
-        .into_iter()
-        .map(|(value, tasks)| TaskGroup {
-            label: format!("{field_prefix}: {value}"),
-            tasks,
-        })
-        .collect();
-
-    // Sort groups by label according to direction
-    groups.sort_by(|a, b| match directive.direction {
-        Direction::Asc => a.label.cmp(&b.label),
-        Direction::Desc => b.label.cmp(&a.label),
-    });
-
-    // Tasks without a group value go to the end
-    if !no_value.is_empty() {
-        groups.push(TaskGroup {
-            label: fallback_label,
-            tasks: no_value,
-        });
-    }
-
-    groups
+    group_by_directives(&list.group_directives, tasks)
 }
 
 pub fn load_all(lists_dir: &Path) -> Vec<SmartList> {

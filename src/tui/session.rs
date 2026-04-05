@@ -5,12 +5,36 @@ use std::path::PathBuf;
 use crate::parser::parse_task_line;
 use crate::query::sort_tasks;
 use crate::refresh::SnapshotIndex;
+use crate::smartlist::{Directive, Direction};
 use crate::store::{Snapshot, StoredTask, TaskId, TaskStore};
 use crate::task::Task;
 use crate::tui::app::{AppAction, AppMode, AppState, FocusArea};
 use crate::tui::editor::{ConflictChoice, EditorState, SelectedTask};
 use crate::tui::widgets::render_task_lines;
 use ratatui::widgets::{Paragraph, Wrap};
+
+pub struct ViewOverrides {
+    pub sort: Option<Directive>,
+    pub group: Option<Directive>,
+    pub reversed: bool,
+}
+
+impl ViewOverrides {
+    pub fn new() -> Self {
+        Self { sort: None, group: None, reversed: false }
+    }
+    pub fn clear(&mut self) {
+        self.sort = None;
+        self.group = None;
+        self.reversed = false;
+    }
+    pub fn has_sort_override(&self) -> bool {
+        self.sort.is_some() || self.reversed
+    }
+    pub fn has_group_override(&self) -> bool {
+        self.group.is_some()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarItem {
@@ -103,6 +127,7 @@ pub struct TuiSession {
     selected_task_index: Option<usize>,
     task_scroll_override: Option<u16>,
     fs_index: Option<SnapshotIndex>,
+    view_overrides: ViewOverrides,
 }
 
 impl TuiSession {
@@ -133,6 +158,7 @@ impl TuiSession {
             selected_task_index: None,
             task_scroll_override: None,
             fs_index: None,
+            view_overrides: ViewOverrides::new(),
         }
     }
 
@@ -155,6 +181,7 @@ impl TuiSession {
             selected_task_index: None,
             task_scroll_override: None,
             fs_index,
+            view_overrides: ViewOverrides::new(),
         };
         session.rebuild();
         Ok(session)
@@ -193,6 +220,82 @@ impl TuiSession {
             SidebarItem::SmartList(index) => self.smart_lists.get(*index),
             _ => None,
         }
+    }
+
+    pub fn view_overrides(&self) -> &ViewOverrides {
+        &self.view_overrides
+    }
+
+    pub fn override_indicator(&self) -> String {
+        let mut parts = Vec::new();
+
+        let sort_directives = self.effective_sort_directives();
+        if self.view_overrides.has_sort_override() {
+            if let Some(d) = sort_directives.first() {
+                let arrow = match d.direction {
+                    crate::smartlist::Direction::Asc => "\u{2191}",  // ↑
+                    crate::smartlist::Direction::Desc => "\u{2193}", // ↓
+                };
+                parts.push(format!(
+                    "[sort: {} {}]",
+                    crate::smartlist::field_display_name(&d.field),
+                    arrow
+                ));
+            }
+        }
+
+        if self.view_overrides.has_group_override() {
+            let group_directives = self.effective_group_directives();
+            if let Some(d) = group_directives.first() {
+                parts.push(format!(
+                    "[group: {}]",
+                    crate::smartlist::field_display_name(&d.field),
+                ));
+            }
+        }
+
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", parts.join(" "))
+        }
+    }
+
+    pub fn set_sort_override(&mut self, directive: Directive) {
+        let selected = self.current_selection_target();
+        self.view_overrides.sort = Some(directive);
+        self.view_overrides.reversed = false;
+        self.rebuild_visible_tasks();
+        self.reselect_task(selected);
+    }
+
+    pub fn set_group_override(&mut self, directive: Directive) {
+        let selected = self.current_selection_target();
+        self.view_overrides.group = Some(directive);
+        self.rebuild_visible_tasks();
+        self.reselect_task(selected);
+    }
+
+    pub fn clear_sort_override(&mut self) {
+        let selected = self.current_selection_target();
+        self.view_overrides.sort = None;
+        self.view_overrides.reversed = false;
+        self.rebuild_visible_tasks();
+        self.reselect_task(selected);
+    }
+
+    pub fn clear_group_override(&mut self) {
+        let selected = self.current_selection_target();
+        self.view_overrides.group = None;
+        self.rebuild_visible_tasks();
+        self.reselect_task(selected);
+    }
+
+    pub fn toggle_reverse_sort(&mut self) {
+        let selected = self.current_selection_target();
+        self.view_overrides.reversed = !self.view_overrides.reversed;
+        self.rebuild_visible_tasks();
+        self.reselect_task(selected);
     }
 
     pub fn selected_task(&self) -> Option<&StoredTask> {
@@ -293,6 +396,7 @@ impl TuiSession {
 
     pub fn select_sidebar_item(&mut self, item: SidebarItem) {
         self.active_sidebar_item = item;
+        self.view_overrides.clear();
         self.rebuild_visible_tasks();
     }
 
@@ -378,6 +482,36 @@ impl TuiSession {
         Ok(())
     }
 
+    fn effective_sort_directives(&self) -> Vec<Directive> {
+        let base = if let Some(ref sort) = self.view_overrides.sort {
+            vec![sort.clone()]
+        } else if let Some(smart_list) = self.smart_list_for_active() {
+            smart_list.sort_directives.clone()
+        } else {
+            Vec::new()
+        };
+        if self.view_overrides.reversed && !base.is_empty() {
+            let mut flipped = base;
+            flipped[0].direction = match flipped[0].direction {
+                Direction::Asc => Direction::Desc,
+                Direction::Desc => Direction::Asc,
+            };
+            flipped
+        } else {
+            base
+        }
+    }
+
+    fn effective_group_directives(&self) -> Vec<Directive> {
+        if let Some(ref group) = self.view_overrides.group {
+            vec![group.clone()]
+        } else if let Some(smart_list) = self.smart_list_for_active() {
+            smart_list.group_directives.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn rebuild(&mut self) {
         self.sidebar_items = build_sidebar_items(&self.smart_lists, &self.snapshot);
         if !self.sidebar_items.contains(&self.active_sidebar_item) {
@@ -400,7 +534,7 @@ impl TuiSession {
 
     fn rebuild_visible_tasks(&mut self) {
         self.task_scroll_override = None;
-        self.visible_tasks = apply_search_filter(
+        let mut tasks = apply_search_filter(
             filter_snapshot(
                 &self.snapshot,
                 &self.active_sidebar_item,
@@ -409,14 +543,44 @@ impl TuiSession {
             ),
             &self.app.search_query,
         );
-        self.visible_groups = if let Some(smart_list) = self.smart_list_for_active() {
-            crate::smartlist::group(smart_list, &self.visible_tasks)
-        } else {
-            vec![crate::smartlist::TaskGroup {
-                label: String::new(),
-                tasks: self.visible_tasks.clone(),
-            }]
-        };
+        let sort_directives = self.effective_sort_directives();
+        if !sort_directives.is_empty() {
+            crate::smartlist::sort_by_directives(&mut tasks, &sort_directives);
+        }
+        if self.view_overrides.reversed && sort_directives.is_empty() {
+            tasks.reverse();
+        }
+        self.visible_tasks = tasks;
+        let group_directives = self.effective_group_directives();
+        self.visible_groups = crate::smartlist::group_by_directives(&group_directives, &self.visible_tasks);
+        // When a sort override is active, re-sort tasks within each group and
+        // reorder the groups themselves so that sorting is visible even when
+        // grouping is enabled.
+        let has_groups = self.visible_groups.len() > 1
+            || self.visible_groups.first().is_some_and(|g| !g.label.is_empty());
+        if has_groups && !sort_directives.is_empty() {
+            for group in &mut self.visible_groups {
+                crate::smartlist::sort_by_directives(&mut group.tasks, &sort_directives);
+            }
+            // If sort and group share the same field, reorder groups by sort direction.
+            if let (Some(sd), Some(gd)) = (sort_directives.first(), group_directives.first()) {
+                if sd.field == gd.field {
+                    self.visible_groups.sort_by(|a, b| match sd.direction {
+                        Direction::Asc => a.label.cmp(&b.label),
+                        Direction::Desc => b.label.cmp(&a.label),
+                    });
+                }
+            }
+        }
+        // Rebuild visible_tasks to match the visual (grouped) order so that
+        // j/k selection follows what the user sees on screen.
+        if has_groups {
+            self.visible_tasks = self
+                .visible_groups
+                .iter()
+                .flat_map(|g| g.tasks.iter().cloned())
+                .collect();
+        }
         self.selected_task_index = (!self.visible_tasks.is_empty()).then_some(0);
         self.sync_selected_task();
     }
@@ -482,24 +646,14 @@ impl TuiSession {
             }
             AppAction::ToggleDone => {
                 let wanted = self.current_selection_target();
-                if let Some(task_id) = self
-                    .selected_task()
-                    .filter(|stored| !stored.task.done)
-                    .map(|stored| stored.id.clone())
-                {
-                    let today = self.today.clone();
-                    self.store_mut()?.mark_done(&task_id, &today)?;
-                    self.refresh_to_target(wanted)?;
-                }
-            }
-            AppAction::RestoreCompleted => {
-                let wanted = self.current_selection_target();
-                if let Some(task_id) = self
-                    .selected_task()
-                    .filter(|stored| stored.task.done)
-                    .map(|stored| stored.id.clone())
-                {
-                    self.store_mut()?.restore_task(&task_id)?;
+                if let Some(stored) = self.selected_task() {
+                    let task_id = stored.id.clone();
+                    if stored.task.done {
+                        self.store_mut()?.restore_task(&task_id)?;
+                    } else {
+                        let today = self.today.clone();
+                        self.store_mut()?.mark_done(&task_id, &today)?;
+                    }
                     self.refresh_to_target(wanted)?;
                 }
             }
@@ -532,6 +686,50 @@ impl TuiSession {
                     }
                 }
             }
+            AppAction::PickerSelect => {
+                if let Some(picker) = self.app.picker.take() {
+                    let directive = crate::smartlist::Directive {
+                        field: picker.selected_field().clone(),
+                        direction: crate::smartlist::Direction::Asc,
+                    };
+                    match picker.kind {
+                        crate::tui::app::PickerKind::Sort => {
+                            self.view_overrides.sort = Some(directive);
+                            self.view_overrides.reversed = false;
+                        }
+                        crate::tui::app::PickerKind::Group => {
+                            self.view_overrides.group = Some(directive);
+                        }
+                    }
+                    let wanted = self.current_selection_target();
+                    self.rebuild_visible_tasks();
+                    self.reselect_task(wanted);
+                }
+            }
+            AppAction::DeactivateSort => {
+                if self.view_overrides.has_sort_override() {
+                    self.view_overrides.sort = None;
+                    self.view_overrides.reversed = false;
+                    let wanted = self.current_selection_target();
+                    self.rebuild_visible_tasks();
+                    self.reselect_task(wanted);
+                }
+            }
+            AppAction::DeactivateGroup => {
+                if self.view_overrides.has_group_override() {
+                    self.view_overrides.group = None;
+                    let wanted = self.current_selection_target();
+                    self.rebuild_visible_tasks();
+                    self.reselect_task(wanted);
+                }
+            }
+            AppAction::ReverseSort => {
+                self.view_overrides.reversed = !self.view_overrides.reversed;
+                let wanted = self.current_selection_target();
+                self.rebuild_visible_tasks();
+                self.reselect_task(wanted);
+            }
+            AppAction::OpenSortPicker | AppAction::OpenGroupPicker => {}
             _ => {}
         }
 
@@ -823,7 +1021,7 @@ fn filter_snapshot(
                 } else {
                     snapshot.open_tasks.clone()
                 };
-                crate::smartlist::evaluate(smart_list, &all_tasks, today)
+                crate::smartlist::filter_only(smart_list, &all_tasks, today)
             } else {
                 Vec::new()
             }

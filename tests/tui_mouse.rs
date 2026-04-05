@@ -62,6 +62,7 @@ fn click_on_sidebar_item_returns_select_sidebar() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
     let sidebar_items = vec![
         SidebarItem::SmartList(0),
@@ -102,6 +103,7 @@ fn click_on_task_pane_returns_click_task_pane() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
     let sidebar_items = vec![
         SidebarItem::SmartList(0),
@@ -128,6 +130,7 @@ fn click_outside_both_panes_returns_none() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
     let sidebar_items = vec![
         SidebarItem::SmartList(0),
@@ -150,6 +153,7 @@ fn scroll_in_task_pane() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
 
     let action = resolve_scroll_action(30, 5, &rects, -1);
@@ -172,6 +176,7 @@ fn scroll_in_sidebar() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
 
     let action = resolve_scroll_action(5, 5, &rects, 1);
@@ -194,6 +199,7 @@ fn scroll_outside_panes_returns_none() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
 
     let action = resolve_scroll_action(5, 23, &rects, 1);
@@ -294,6 +300,7 @@ fn sidebar_click_with_scroll_offset_maps_correctly() {
         task_pane_inner_width: 54,
         visual_line_count: 0,
         pane_height: 20,
+        task_scroll_offset: 0,
     };
     let sidebar_items: Vec<SidebarItem> = (0..10)
         .map(|i| SidebarItem::SmartList(i))

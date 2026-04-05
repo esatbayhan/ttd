@@ -14,6 +14,7 @@ It stores tasks as plain text, keeps open and completed items in a
 - **Conflict detection**: safe concurrent editing with advisory file locking
 - **Live refresh**: automatic filesystem polling detects external changes
 - **CLI commands**: `add`, `list`, `done`, `search` for scripting and quick use
+- **Temporary sort and group**: overlay pickers to sort/group by any field without editing list files
 - **Vim-style navigation**: `j`/`k`, `h`/`l`, `gg`/`G` keybindings
 
 ## Build and install
@@ -46,11 +47,16 @@ cargo install --path .
 ```text
 todo.txt.d/
   done.txt.d/
+  lists.d/
+    today.list
+    inbox.list
+    ...
   task-....txt
 ```
 
 Open tasks live in the root task directory as `.txt` files.
 Completed tasks live in `done.txt.d/`.
+Smart list definitions live in `lists.d/`.
 
 ## First run
 
@@ -64,6 +70,35 @@ Config is stored at:
 - `$XDG_CONFIG_HOME/ttd/config.txt`
 - or `~/.config/ttd/config.txt`
 
+## Smart lists
+
+The sidebar in the TUI is populated from `.list` files in the `lists.d/`
+subdirectory of your task directory. Each file defines a filtered view
+with optional sorting and grouping.
+
+Example (`lists.d/today.list`):
+
+```
+---
+name: Today
+icon: 📅
+order: 1
+---
+due <= today
+OR
+scheduled <= today
+
+sort by priority desc
+sort by due asc
+```
+
+Smart lists support date comparisons, priority filters, text matching,
+and existence checks. For the full syntax and all available options, see
+the [Smart Lists Specification](spec/LISTS.md).
+
+In addition to smart lists, the sidebar automatically shows `+Project`
+and `@Context` entries extracted from your tasks.
+
 ## TUI keybindings
 
 | Key | Action |
@@ -73,9 +108,13 @@ Config is stored at:
 | `gg`/`G` | Jump to top/bottom |
 | `a` | Add a new task |
 | `e` | Edit selected task |
-| `x` | Mark task as done |
-| `r` | Restore completed task |
+| `x` | Toggle task done/undone |
 | `D` | Delete task (with confirmation) |
+| `s` | Temporary sort (opens field picker) |
+| `S` | Deactivate temporary sort |
+| `o` | Temporary group (opens field picker) |
+| `O` | Deactivate temporary group |
+| `r` | Reverse current sort order |
 | `/` | Search tasks |
 | `R` | Force refresh |
 | `q` | Quit |
